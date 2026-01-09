@@ -1,0 +1,914 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# =============================================================================
+# ccc - Claude Code Container CLI
+# =============================================================================
+
+# Constants
+readonly IMAGE_NAME_BASE="claude-code-sandbox:latest"
+readonly LABEL_PREFIX="ccc"
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Image name (set after runtime detection - podman uses localhost/ prefix)
+IMAGE_NAME=""
+
+# Globals
+QUIET=false
+CONTAINER_RUNTIME=""  # Will be set by detect_runtime()
+RUNTIME_MODE=""       # "podman", "docker-rootful", "docker-rootless"
+
+# =============================================================================
+# Runtime Detection
+# =============================================================================
+
+# Check if Podman is available
+has_podman() {
+    command -v podman &>/dev/null && podman info &>/dev/null
+}
+
+# Check if Docker is available
+has_docker() {
+    command -v docker &>/dev/null && docker info &>/dev/null
+}
+
+# Check if Docker is running in rootless mode
+is_docker_rootless() {
+    docker info 2>/dev/null | grep -q "rootless"
+}
+
+# Detect and select the best available container runtime
+# Priority: Podman > Docker rootful > Docker rootless
+detect_runtime() {
+    if has_podman; then
+        CONTAINER_RUNTIME="podman"
+        RUNTIME_MODE="podman"
+        IMAGE_NAME="localhost/${IMAGE_NAME_BASE}"
+        return 0
+    fi
+
+    if has_docker; then
+        CONTAINER_RUNTIME="docker"
+        IMAGE_NAME="$IMAGE_NAME_BASE"
+        if is_docker_rootless; then
+            RUNTIME_MODE="docker-rootless"
+        else
+            RUNTIME_MODE="docker-rootful"
+        fi
+        return 0
+    fi
+
+    return 1
+}
+
+# Show runtime warning for modes without godmode support (first time only per session)
+NOGODMODE_WARNING_SHOWN=false
+show_nogodmode_warning() {
+    [[ "$NOGODMODE_WARNING_SHOWN" == true ]] && return
+    [[ "$RUNTIME_MODE" != "docker-rootless" ]] && return
+    [[ "$QUIET" == true ]] && return
+
+    NOGODMODE_WARNING_SHOWN=true
+    gum style --foreground 3 --bold "⚠ WARNING: Running with Docker in rootless mode"
+    gum style --foreground 3 "  • Godmode (-g) not available"
+    gum style --foreground 3 "  • Container isolation still provides security"
+    echo ""
+}
+
+# Get runtime info for display
+get_runtime_info() {
+    case "$RUNTIME_MODE" in
+        podman) echo "Podman (godmode supported)" ;;
+        docker-rootful) echo "Docker rootful (godmode supported)" ;;
+        docker-rootless) echo "Docker rootless (no godmode)" ;;
+        *) echo "Unknown" ;;
+    esac
+}
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
+# Check if gum is available, use nix-shell if not
+gum() {
+    if command -v gum &>/dev/null; then
+        command gum "$@"
+    else
+        nix-shell -p gum --run "gum $*"
+    fi
+}
+
+# Print error and exit
+die() {
+    gum style --foreground 1 --bold "Error: $1" >&2
+    exit 1
+}
+
+# Print info message (respects QUIET)
+info() {
+    [[ "$QUIET" == true ]] && return
+    gum style --foreground 4 "$1"
+}
+
+# Print success message (respects QUIET)
+success() {
+    [[ "$QUIET" == true ]] && return
+    gum style --foreground 2 --bold "$1"
+}
+
+# Print warning message
+warn() {
+    gum style --foreground 3 "$1" >&2
+}
+
+# Generate container name from directory
+generate_name() {
+    local dir="$1"
+    local basename
+    basename=$(basename "$dir")
+
+    # Escape: lowercase, replace non-alnum with -, collapse multiple -, trim
+    local escaped
+    escaped=$(echo "$basename" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/-\+/-/g' | sed 's/^-//' | sed 's/-$//')
+
+    # Truncate to 30 chars
+    escaped="${escaped:0:30}"
+
+    # Generate 4-char hash from full path
+    local hash
+    hash=$(echo -n "$dir" | md5sum | cut -c1-4)
+
+    echo "ccc-${escaped}-${hash}"
+}
+
+# Get list of managed containers
+get_containers() {
+    local format="${1:-table}"
+    local filter="${2:-}"
+
+    local cmd_args=(ps -a --filter "label=${LABEL_PREFIX}.managed=true")
+
+    if [[ -n "$filter" ]]; then
+        cmd_args+=(--filter "name=$filter")
+    fi
+
+    if [[ "$format" == "quiet" ]]; then
+        cmd_args+=(--format '{{.Names}}')
+    elif [[ "$format" == "json" ]]; then
+        cmd_args+=(--format 'json')
+    else
+        # Simple format that works for both Podman and Docker
+        # Note: Label indexing differs between runtimes and can fail when keys don't exist
+        cmd_args+=(--format 'table {{.Names}}\t{{.Status}}\t{{.CreatedAt}}')
+    fi
+
+    $CONTAINER_RUNTIME "${cmd_args[@]}" 2>/dev/null
+}
+
+# Get running containers only
+get_running_containers() {
+    $CONTAINER_RUNTIME ps --filter "label=${LABEL_PREFIX}.managed=true" --format '{{.Names}}' 2>/dev/null
+}
+
+# Check if container exists
+container_exists() {
+    local name="$1"
+    $CONTAINER_RUNTIME ps -a --filter "name=^${name}$" --format '{{.Names}}' 2>/dev/null | grep -q "^${name}$"
+}
+
+# Check if container is running
+container_running() {
+    local name="$1"
+    $CONTAINER_RUNTIME ps --filter "name=^${name}$" --format '{{.Names}}' 2>/dev/null | grep -q "^${name}$"
+}
+
+# Get stopped containers only
+get_stopped_containers() {
+    $CONTAINER_RUNTIME ps -a --filter "label=${LABEL_PREFIX}.managed=true" --filter "status=exited" --format '{{.Names}}' 2>/dev/null
+}
+
+# =============================================================================
+# Commands
+# =============================================================================
+
+cmd_new() {
+    local directory=""
+    local tmux_mount=false
+    local name=""
+    local interactive=false
+    local prompt=""
+    local prompt_file=""
+    local godmode=false
+    local cc_args=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -d|--directory)
+                directory="$2"
+                shift 2
+                ;;
+            -t|--tmux-mount)
+                tmux_mount=true
+                shift
+                ;;
+            -n|--name)
+                name="$2"
+                shift 2
+                ;;
+            -i|--interactive)
+                interactive=true
+                shift
+                ;;
+            -p)
+                if [[ "$2" == "-" ]]; then
+                    prompt=$(cat)
+                else
+                    prompt="$2"
+                fi
+                shift 2
+                ;;
+            -f)
+                prompt_file="$2"
+                shift 2
+                ;;
+            -g|--godmode)
+                godmode=true
+                shift
+                ;;
+            --cc-args)
+                cc_args="$2"
+                shift 2
+                ;;
+            -*)
+                # Handle combined short flags like -ig, -gi, -igt, etc.
+                local flags="${1#-}"
+                shift
+                while [[ -n "$flags" ]]; do
+                    local flag="${flags:0:1}"
+                    flags="${flags:1}"
+                    case "$flag" in
+                        i) interactive=true ;;
+                        g) godmode=true ;;
+                        t) tmux_mount=true ;;
+                        *) die "Unknown flag: -$flag" ;;
+                    esac
+                done
+                ;;
+            *)
+                die "Unknown option: $1"
+                ;;
+        esac
+    done
+
+    # Default directory to pwd
+    directory="${directory:-$(pwd)}"
+    directory=$(realpath "$directory")
+
+    # Generate name if not provided
+    if [[ -z "$name" ]]; then
+        name=$(generate_name "$directory")
+    fi
+
+    # Check if container already exists
+    if container_exists "$name"; then
+        die "Container '$name' already exists. Use 'ccc stop -n $name' first or choose a different name."
+    fi
+
+    info "Creating container: $name"
+    info "Directory: $directory"
+    info "Runtime: $(get_runtime_info)"
+
+    # Show warning for runtimes without godmode support
+    show_nogodmode_warning
+
+    # Generate session ID for resumable sessions
+    local session_id
+    session_id=$(uuidgen)
+
+    # Build container run command
+    local run_args=(
+        run
+        --name "$name"
+        --hostname "claude-sandbox"
+        -w "$directory"
+        -e "CLAUDE_HOST_PATH=$directory"
+        -e "CLAUDE_HOST_HOME=$HOME"
+        -e "TERM=${TERM:-xterm-256color}"
+        -v "$directory:$directory"
+        -v "$HOME/.claude:$HOME/.claude"
+        -v "$HOME/.claude.json:$HOME/.claude.json"
+        --network host
+        --label "${LABEL_PREFIX}.managed=true"
+        --label "${LABEL_PREFIX}.name=$name"
+        --label "${LABEL_PREFIX}.directory=$directory"
+        --label "${LABEL_PREFIX}.runtime=$RUNTIME_MODE"
+        --label "${LABEL_PREFIX}.session-id=$session_id"
+    )
+
+    # Runtime-specific configuration
+    case "$RUNTIME_MODE" in
+        podman)
+            # Podman rootless: entrypoint switches to non-root user (for godmode)
+            # User is added to group 0 (root) for file access since mounted files
+            # appear as root:root in rootless podman
+            run_args+=(
+                -e "CLAUDE_HOST_UID=$(id -u)"
+                -e "CLAUDE_HOST_USER=$USER"
+            )
+            ;;
+        docker-rootful)
+            # Docker rootful: use --userns=host and create matching user
+            run_args+=(
+                --userns=host
+                -e "CLAUDE_HOST_UID=$(id -u)"
+                -e "CLAUDE_HOST_GID=$(id -g)"
+                -e "CLAUDE_HOST_USER=$USER"
+            )
+            ;;
+        docker-rootless)
+            # Docker rootless: run as root (maps to host user)
+            # No UID env vars - entrypoint will stay as root
+            ;;
+    esac
+
+    # Add tmux socket mount if requested
+    if [[ "$tmux_mount" == true ]]; then
+        local tmux_socket="/tmp/tmux-$(id -u)"
+        run_args+=(-v "$tmux_socket:$tmux_socket:rw")
+        info "Tmux socket mounted"
+    fi
+
+    # Build claude command args
+    local claude_args=(--session-id "$session_id")
+
+    # Add godmode flags
+    if [[ "$godmode" == true ]]; then
+        run_args+=(--label "${LABEL_PREFIX}.godmode=true")
+        if [[ "$RUNTIME_MODE" == "docker-rootless" ]]; then
+            warn "Godmode unavailable in Docker rootless (no user switching support)"
+            warn "Container still provides filesystem isolation. You'll need to approve permissions manually."
+        else
+            claude_args+=(--dangerously-skip-permissions)
+            info "Godmode enabled"
+        fi
+    fi
+
+    # Add custom cc_args
+    if [[ -n "$cc_args" ]]; then
+        # shellcheck disable=SC2206
+        claude_args+=($cc_args)
+    fi
+
+    # Handle prompt
+    if [[ -n "$prompt" ]]; then
+        # Create temp file for prompt
+        local prompt_tmp
+        prompt_tmp=$(mktemp)
+        echo "$prompt" > "$prompt_tmp"
+        run_args+=(-v "$prompt_tmp:/tmp/claude-prompt.md:ro")
+        claude_args+=(-p "$(cat "$prompt_tmp")")
+    elif [[ -n "$prompt_file" ]]; then
+        if [[ ! -f "$prompt_file" ]]; then
+            die "Prompt file not found: $prompt_file"
+        fi
+        run_args+=(-v "$(realpath "$prompt_file"):/tmp/claude-prompt.md:ro")
+        claude_args+=(-p "$(cat "$prompt_file")")
+    fi
+
+    # Interactive or daemon mode
+    if [[ "$interactive" == true ]]; then
+        run_args+=(-it)
+        run_args+=(--label "${LABEL_PREFIX}.mode=interactive")
+        info "Starting interactive session..."
+        info "Session ID: $session_id"
+        info "Detach with Ctrl+P,Q, reattach with: ccc attach"
+
+        # Run container
+        $CONTAINER_RUNTIME "${run_args[@]}" "$IMAGE_NAME" claude "${claude_args[@]}"
+    else
+        run_args+=(-d)
+        run_args+=(--label "${LABEL_PREFIX}.mode=headless")
+
+        # Start container with keep-alive process (restartable)
+        local container_id
+        if [[ "$QUIET" == true ]]; then
+            container_id=$($CONTAINER_RUNTIME "${run_args[@]}" "$IMAGE_NAME" \
+                tail -f /dev/null 2>/dev/null)
+        else
+            container_id=$(gum spin --spinner dot --title "Starting container..." -- \
+                $CONTAINER_RUNTIME "${run_args[@]}" "$IMAGE_NAME" \
+                tail -f /dev/null)
+        fi
+
+        # Run claude with the prompt via exec (separate from container's main process)
+        info "Running prompt..."
+        # Use --user to run as non-root for godmode support
+        if [[ "$RUNTIME_MODE" == "podman" ]]; then
+            $CONTAINER_RUNTIME exec --user "$(id -u):0" -e "HOME=$HOME" "$name" claude "${claude_args[@]}"
+        else
+            $CONTAINER_RUNTIME exec -e "HOME=$HOME" "$name" claude "${claude_args[@]}"
+        fi
+
+        success "Prompt completed: $name"
+        info "Session ID: $session_id"
+        info "Attach with: ccc attach -n $name"
+
+        if [[ "$QUIET" == true ]]; then
+            echo "$name"
+        fi
+    fi
+}
+
+cmd_list() {
+    local quiet=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -q|--quiet)
+                quiet=true
+                shift
+                ;;
+            *)
+                die "Unknown option: $1"
+                ;;
+        esac
+    done
+
+    if [[ "$quiet" == true ]] || [[ "$QUIET" == true ]]; then
+        get_containers "quiet"
+    else
+        gum style --bold --foreground 5 "Claude Code Containers"
+        echo ""
+
+        local containers
+        containers=$(get_containers "table")
+
+        if [[ -z "$containers" ]] || [[ "$containers" == "NAMES"* && $(echo "$containers" | wc -l) -eq 1 ]]; then
+            info "No containers found"
+        else
+            # Use gum table only if TTY available, otherwise just print
+            if [[ -t 1 ]]; then
+                echo "$containers" | gum table
+            else
+                echo "$containers"
+            fi
+        fi
+    fi
+}
+
+cmd_stop() {
+    local name=""
+    local all=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -n|--name)
+                name="$2"
+                shift 2
+                ;;
+            -a|--all)
+                all=true
+                shift
+                ;;
+            *)
+                die "Unknown option: $1"
+                ;;
+        esac
+    done
+
+    if [[ "$all" == true ]]; then
+        local containers
+        containers=$(get_containers "quiet")
+
+        if [[ -z "$containers" ]]; then
+            info "No containers to stop"
+            return 0
+        fi
+
+        echo "Containers to stop:"
+        echo "$containers" | gum style --foreground 3
+        echo ""
+
+        if gum confirm "Stop all containers?"; then
+            echo "$containers" | while read -r container; do
+                if [[ -n "$container" ]]; then
+                    gum spin --spinner dot --title "Stopping $container..." -- \
+                        $CONTAINER_RUNTIME stop "$container" >/dev/null 2>&1
+                    $CONTAINER_RUNTIME rm "$container" >/dev/null 2>&1 || true
+                    success "Stopped: $container"
+                fi
+            done
+        else
+            info "Cancelled"
+        fi
+    elif [[ -n "$name" ]]; then
+        if ! container_exists "$name"; then
+            die "Container not found: $name"
+        fi
+
+        gum spin --spinner dot --title "Stopping $name..." -- \
+            $CONTAINER_RUNTIME stop "$name" >/dev/null 2>&1
+        $CONTAINER_RUNTIME rm "$name" >/dev/null 2>&1 || true
+        success "Stopped: $name"
+    else
+        # Interactive selection
+        local containers
+        containers=$(get_containers "quiet")
+
+        if [[ -z "$containers" ]]; then
+            info "No containers to stop"
+            return 0
+        fi
+
+        name=$(echo "$containers" | gum choose --header "Select container to stop:")
+
+        if [[ -n "$name" ]]; then
+            gum spin --spinner dot --title "Stopping $name..." -- \
+                $CONTAINER_RUNTIME stop "$name" >/dev/null 2>&1
+            $CONTAINER_RUNTIME rm "$name" >/dev/null 2>&1 || true
+            success "Stopped: $name"
+        fi
+    fi
+}
+
+cmd_start() {
+    local name=""
+    local attach=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -n|--name)
+                name="$2"
+                shift 2
+                ;;
+            -a|--attach)
+                attach=true
+                shift
+                ;;
+            *)
+                die "Unknown option: $1"
+                ;;
+        esac
+    done
+
+    if [[ -z "$name" ]]; then
+        # Interactive selection from stopped containers
+        local containers
+        containers=$(get_stopped_containers)
+
+        if [[ -z "$containers" ]]; then
+            die "No stopped containers to start"
+        fi
+
+        name=$(echo "$containers" | gum choose --header "Select container to start:")
+
+        if [[ -z "$name" ]]; then
+            die "No container selected"
+        fi
+    fi
+
+    if ! container_exists "$name"; then
+        die "Container not found: $name"
+    fi
+
+    if container_running "$name"; then
+        info "Container already running: $name"
+    else
+        gum spin --spinner dot --title "Starting $name..." -- \
+            $CONTAINER_RUNTIME start "$name" >/dev/null 2>&1
+        success "Started: $name"
+    fi
+
+    # Get session info for display
+    local session_id
+    session_id=$($CONTAINER_RUNTIME inspect "$name" --format '{{index .Config.Labels "ccc.session-id"}}' 2>/dev/null)
+    if [[ -n "$session_id" ]]; then
+        info "Session ID: $session_id"
+    fi
+
+    if [[ "$attach" == true ]]; then
+        cmd_attach -n "$name"
+    else
+        info "Attach with: ccc attach -n $name"
+    fi
+}
+
+cmd_attach() {
+    local name=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -n|--name)
+                name="$2"
+                shift 2
+                ;;
+            *)
+                die "Unknown option: $1"
+                ;;
+        esac
+    done
+
+    if [[ -z "$name" ]]; then
+        # Interactive selection
+        local containers
+        containers=$(get_running_containers)
+
+        if [[ -z "$containers" ]]; then
+            die "No running containers to attach to"
+        fi
+
+        name=$(echo "$containers" | gum choose --header "Select container to attach:")
+
+        if [[ -z "$name" ]]; then
+            die "No container selected"
+        fi
+    fi
+
+    # Start container if it's stopped
+    if ! container_running "$name"; then
+        if container_exists "$name"; then
+            info "Starting stopped container: $name"
+            $CONTAINER_RUNTIME start "$name" >/dev/null 2>&1
+            sleep 1  # Give it a moment to start
+        else
+            die "Container '$name' not found"
+        fi
+    fi
+
+    # Get session ID, mode, godmode, and runtime from container labels
+    local session_id mode godmode container_runtime
+    session_id=$($CONTAINER_RUNTIME inspect "$name" --format '{{index .Config.Labels "ccc.session-id"}}' 2>/dev/null)
+    mode=$($CONTAINER_RUNTIME inspect "$name" --format '{{index .Config.Labels "ccc.mode"}}' 2>/dev/null)
+    godmode=$($CONTAINER_RUNTIME inspect "$name" --format '{{index .Config.Labels "ccc.godmode"}}' 2>/dev/null)
+    container_runtime=$($CONTAINER_RUNTIME inspect "$name" --format '{{index .Config.Labels "ccc.runtime"}}' 2>/dev/null)
+
+    if [[ "$mode" == "interactive" ]]; then
+        # Interactive mode: attach to the running claude process
+        info "Attaching to interactive session (Ctrl+P, Ctrl+Q to detach)"
+        $CONTAINER_RUNTIME attach "$name"
+    elif [[ -n "$session_id" ]]; then
+        # Headless mode: exec with --resume to continue the session
+        info "Resuming session: $session_id"
+        local claude_cmd=(claude --resume "$session_id")
+        # Enable godmode if supported (podman and docker-rootful)
+        if [[ "$godmode" == "true" && "$container_runtime" != "docker-rootless" ]]; then
+            claude_cmd+=(--dangerously-skip-permissions)
+            info "Godmode enabled"
+        fi
+        # Use --user for podman to run as non-root
+        if [[ "$container_runtime" == "podman" ]]; then
+            $CONTAINER_RUNTIME exec -it --user "$(id -u):0" -e "HOME=$HOME" "$name" "${claude_cmd[@]}"
+        else
+            $CONTAINER_RUNTIME exec -it -e "HOME=$HOME" "$name" "${claude_cmd[@]}"
+        fi
+    else
+        # Fallback: just attach
+        warn "No session ID found, using container attach"
+        info "Attaching to $name (Ctrl+P, Ctrl+Q to detach)"
+        $CONTAINER_RUNTIME attach "$name"
+    fi
+}
+
+cmd_logs() {
+    local name=""
+    local follow=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -n|--name)
+                name="$2"
+                shift 2
+                ;;
+            -f|--follow)
+                follow=true
+                shift
+                ;;
+            *)
+                die "Unknown option: $1"
+                ;;
+        esac
+    done
+
+    if [[ -z "$name" ]]; then
+        # Interactive selection
+        local containers
+        containers=$(get_containers "quiet")
+
+        if [[ -z "$containers" ]]; then
+            die "No containers found"
+        fi
+
+        name=$(echo "$containers" | gum choose --header "Select container:")
+
+        if [[ -z "$name" ]]; then
+            die "No container selected"
+        fi
+    fi
+
+    if ! container_exists "$name"; then
+        die "Container not found: $name"
+    fi
+
+    local log_args=(logs)
+
+    if [[ "$follow" == true ]]; then
+        log_args+=(-f)
+    fi
+
+    log_args+=("$name")
+
+    $CONTAINER_RUNTIME "${log_args[@]}"
+}
+
+cmd_exec() {
+    local name=""
+    local cmd_args=()
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -n|--name)
+                name="$2"
+                shift 2
+                ;;
+            --)
+                shift
+                cmd_args=("$@")
+                break
+                ;;
+            *)
+                # Everything else is the command
+                cmd_args=("$@")
+                break
+                ;;
+        esac
+    done
+
+    if [[ -z "$name" ]]; then
+        # Interactive selection
+        local containers
+        containers=$(get_running_containers)
+
+        if [[ -z "$containers" ]]; then
+            die "No running containers"
+        fi
+
+        name=$(echo "$containers" | gum choose --header "Select container:")
+
+        if [[ -z "$name" ]]; then
+            die "No container selected"
+        fi
+    fi
+
+    if ! container_running "$name"; then
+        die "Container '$name' is not running"
+    fi
+
+    if [[ ${#cmd_args[@]} -eq 0 ]]; then
+        # Default to shell
+        cmd_args=(sh)
+    fi
+
+    # Use --user for podman to run as non-root
+    if [[ "$RUNTIME_MODE" == "podman" ]]; then
+        $CONTAINER_RUNTIME exec -it --user "$(id -u):0" -e "HOME=$HOME" "$name" "${cmd_args[@]}"
+    else
+        $CONTAINER_RUNTIME exec -it -e "HOME=$HOME" "$name" "${cmd_args[@]}"
+    fi
+}
+
+cmd_help() {
+    gum style --bold --foreground 5 --border double --padding "0 2" \
+        "ccc - Claude Code Container CLI"
+
+    echo ""
+    gum style --bold "Usage:"
+    echo "  ccc <command> [options]"
+    echo ""
+
+    gum style --bold "Commands:"
+    gum format -- \
+        "  **new**      Start a new container" \
+        "  **list**     List managed containers (alias: ls)" \
+        "  **start**    Start a stopped container" \
+        "  **stop**     Stop containers" \
+        "  **attach**   Attach to a running container" \
+        "  **logs**     View container logs" \
+        "  **exec**     Execute command in container" \
+        "  **help**     Show this help"
+
+    echo ""
+    gum style --bold "ccc new options:"
+    gum format -- \
+        "  **-d, --directory** <path>  Mount directory (default: pwd)" \
+        "  **-t, --tmux-mount**        Mount tmux socket" \
+        "  **-n, --name** <name>       Container name (auto-generated if omitted)" \
+        "  **-i, --interactive**       Attach immediately" \
+        "  **-p** <prompt|->           System prompt (- for stdin)" \
+        "  **-f** <file>               System prompt from file" \
+        "  **-g, --godmode**           Full permissions (--dangerously-skip-permissions)" \
+        "  **--cc-args** <args>        Additional claude arguments"
+
+    echo ""
+    gum style --bold "ccc start options:"
+    gum format -- \
+        "  **-n, --name** <name>   Container name" \
+        "  **-a, --attach**        Attach after starting"
+
+    echo ""
+    gum style --bold "Global options:"
+    gum format -- \
+        "  **-q, --quiet**   Suppress verbose output" \
+        "  **-h, --help**    Show help"
+
+    echo ""
+    gum style --bold "Examples:"
+    gum style --foreground 8 "  # Start interactive godmode session in current directory"
+    echo "  ccc new -ig"
+    echo ""
+    gum style --foreground 8 "  # Start headless container with custom prompt"
+    echo "  ccc new -p 'Build and test the project'"
+    echo ""
+    gum style --foreground 8 "  # List all containers"
+    echo "  ccc list"
+    echo ""
+    gum style --foreground 8 "  # Attach to a running container"
+    echo "  ccc attach"
+    echo ""
+    gum style --foreground 8 "  # Restart a stopped container and attach"
+    echo "  ccc start -a"
+}
+
+# =============================================================================
+# Main
+# =============================================================================
+
+main() {
+    # Parse global flags
+    local args=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -q|--quiet)
+                QUIET=true
+                shift
+                ;;
+            -h|--help)
+                cmd_help
+                exit 0
+                ;;
+            *)
+                args+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    # Restore positional args
+    set -- "${args[@]}"
+
+    # Detect container runtime
+    if ! detect_runtime; then
+        die "No container runtime found. Please install Podman or Docker."
+    fi
+
+    # Check for command
+    if [[ $# -eq 0 ]]; then
+        cmd_help
+        exit 0
+    fi
+
+    local command="$1"
+    shift
+
+    case "$command" in
+        new)
+            cmd_new "$@"
+            ;;
+        list|ls)
+            cmd_list "$@"
+            ;;
+        start)
+            cmd_start "$@"
+            ;;
+        stop)
+            cmd_stop "$@"
+            ;;
+        attach)
+            cmd_attach "$@"
+            ;;
+        logs)
+            cmd_logs "$@"
+            ;;
+        exec)
+            cmd_exec "$@"
+            ;;
+        help)
+            cmd_help
+            ;;
+        *)
+            die "Unknown command: $command. Run 'ccc help' for usage."
+            ;;
+    esac
+}
+
+main "$@"
