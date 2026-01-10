@@ -1,6 +1,6 @@
 #!/bin/bash
 # ccc installer - Claude Code Container
-# Usage: curl -fsSL https://raw.githubusercontent.com/arch-err/ccc/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/arch-err/ccc/refs/heads/main/install.sh | bash
 
 set -e
 

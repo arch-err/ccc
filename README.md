@@ -42,7 +42,7 @@ ccc stop -n <container-name>
 ### Quick Install (Recommended)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/arch-err/ccc/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/arch-err/ccc/refs/heads/main/install.sh | bash
 ```
 
 This will:
