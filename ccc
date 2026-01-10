@@ -451,7 +451,10 @@ cmd_new() {
         # Attach to the tmux session
         info "Attaching to session (detach with Ctrl+], d)"
         info "Session ID: $session_id"
-        $CONTAINER_RUNTIME exec -it "$name" /usr/bin/tmux.real -S /tmp/ccc.sock attach-session -t main
+        $CONTAINER_RUNTIME exec -it \
+            -e "TERM=${TERM:-xterm-256color}" \
+            -e "LANG=${LANG:-C.UTF-8}" \
+            "$name" /usr/bin/tmux.real -u -S /tmp/ccc.sock attach-session -t main
     else
         success "Container started: $name"
         info "Session ID: $session_id"
@@ -753,7 +756,10 @@ cmd_attach() {
 
     # Attach to the tmux session
     info "Attaching to session (detach with Ctrl+], d)"
-    $CONTAINER_RUNTIME exec -it "$name" /usr/bin/tmux.real -S /tmp/ccc.sock attach-session -t main
+    $CONTAINER_RUNTIME exec -it \
+        -e "TERM=${TERM:-xterm-256color}" \
+        -e "LANG=${LANG:-C.UTF-8}" \
+        "$name" /usr/bin/tmux.real -u -S /tmp/ccc.sock attach-session -t main
 }
 
 cmd_logs() {

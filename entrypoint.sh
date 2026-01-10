@@ -8,6 +8,8 @@ HOST_HOME="${CLAUDE_HOST_HOME:-/root}"
 # Setup environment
 export HOME="$HOST_HOME"
 export PATH="/usr/local/bin:/root/.nix-profile/bin:/nix/var/nix/profiles/default/bin:$PATH"
+export LANG="${LANG:-C.UTF-8}"
+export LC_ALL="${LC_ALL:-C.UTF-8}"
 
 # Use LD_PRELOAD to fake UID for godmode support
 # This makes Claude think we're uid 1000 while keeping root's file access
