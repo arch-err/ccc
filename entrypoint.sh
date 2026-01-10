@@ -25,7 +25,7 @@ cd "$HOST_PATH"
 mkdir -p "$HOME/.claude"
 
 # Directories that Claude needs to write to (don't symlink, create fresh)
-WRITABLE_DIRS="debug cache todos statsig telemetry shell-snapshots session-env file-history"
+WRITABLE_DIRS="debug cache todos statsig telemetry shell-snapshots session-env file-history projects plans"
 
 # Symlink host's .claude contents (except writable dirs and commands)
 # Include hidden files like .credentials.json
