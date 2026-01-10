@@ -221,3 +221,7 @@ Perfect for running untrusted code generation or sensitive experiments.
 - `ccc` - Main CLI script
 - `Dockerfile` - Container image definition (based on nixos/nix)
 - `entrypoint.sh` - Container entrypoint handling user setup
+
+## License
+
+MIT License - see [LICENSE](LICENSE) for details.
