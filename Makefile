@@ -188,14 +188,10 @@ install:
 	CONFIG_DIR="$${XDG_CONFIG_HOME:-$(HOME)/.config}/ccc"; \
 	mkdir -p "$$CONFIG_DIR"; \
 	if [ ! -f "$$CONFIG_DIR/config.yaml" ]; then \
-		sed "s/^backend:.*/backend: $$SELECTED_BACKEND/" "$(shell pwd)/example_config/config.yaml" > "$$CONFIG_DIR/config.yaml"; \
-		success "Config created with backend: $$SELECTED_BACKEND"; \
+		cp "$(shell pwd)/example_config/config.yaml" "$$CONFIG_DIR/config.yaml"; \
+		success "Config created (backend: auto)"; \
 	else \
 		info "Config exists (not overwritten)"; \
-		if grep -q "^backend:" "$$CONFIG_DIR/config.yaml"; then \
-			sed -i "s/^backend:.*/backend: $$SELECTED_BACKEND/" "$$CONFIG_DIR/config.yaml"; \
-			success "Updated backend to: $$SELECTED_BACKEND"; \
-		fi; \
 	fi; \
 	\
 	echo ""; \
@@ -212,7 +208,8 @@ install:
 	\
 	echo "Next steps:"; \
 	echo "  1. Pull the container image:"; \
-	echo "     $$SELECTED_BACKEND pull ghcr.io/arch-err/ccc:latest"; \
+	echo "     podman pull ghcr.io/arch-err/ccc:latest"; \
+	echo "     # or: docker pull ghcr.io/arch-err/ccc:latest"; \
 	echo ""; \
 	echo "  2. Start using ccc:"; \
 	echo "     ccc new -ig                  # Interactive with godmode"; \
