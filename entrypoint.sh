@@ -19,6 +19,51 @@ export LD_PRELOAD="/usr/local/lib/libfakeuid.so"
 mkdir -p "$HOST_PATH" 2>/dev/null || true
 cd "$HOST_PATH"
 
+# Setup .claude directory with container commands + host config
+# Host's .claude is mounted read-only at /host-claude
+# We create a writable .claude in container that merges both
+mkdir -p "$HOME/.claude"
+
+# Directories that Claude needs to write to (don't symlink, create fresh)
+WRITABLE_DIRS="debug cache todos statsig telemetry shell-snapshots session-env file-history"
+
+# Symlink host's .claude contents (except writable dirs and commands)
+if [ -d /host-claude ]; then
+    for item in /host-claude/*; do
+        [ -e "$item" ] || continue
+        name=$(basename "$item")
+        # Skip commands directory - we'll handle it specially
+        [ "$name" = "commands" ] && continue
+        # Skip writable directories - create fresh ones
+        case " $WRITABLE_DIRS " in
+            *" $name "*) continue ;;
+        esac
+        ln -sf "$item" "$HOME/.claude/$name" 2>/dev/null || true
+    done
+fi
+
+# Create writable directories
+for dir in $WRITABLE_DIRS; do
+    mkdir -p "$HOME/.claude/$dir"
+done
+
+# Create merged commands directory with container commands + host commands
+mkdir -p "$HOME/.claude/commands"
+
+# Copy container commands first (they take precedence)
+if [ -d /ccc/commands ]; then
+    cp /ccc/commands/*.md "$HOME/.claude/commands/" 2>/dev/null || true
+fi
+
+# Copy host commands (don't overwrite container ones)
+if [ -d /host-claude/commands ]; then
+    for cmd in /host-claude/commands/*.md; do
+        [ -f "$cmd" ] || continue
+        cmdname=$(basename "$cmd")
+        [ ! -f "$HOME/.claude/commands/$cmdname" ] && cp "$cmd" "$HOME/.claude/commands/$cmdname"
+    done
+fi
+
 # Check if we should start tmux server (CCC_USE_TMUX env var)
 if [ "${CCC_USE_TMUX:-false}" = "true" ]; then
     # Start tmux server with detached session

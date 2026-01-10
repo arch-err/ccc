@@ -64,6 +64,9 @@ ENV GIT_TERMINAL_PROMPT=0
 # Install tmux config for internal ccc use
 COPY tmux.conf /etc/ccc-tmux.conf
 
+# Install container-specific Claude commands
+COPY commands/ /ccc/commands/
+
 # Create tmux wrapper to prevent accidental tmux usage
 # Move real tmux binary and install wrapper
 COPY tmux-wrapper.sh /usr/local/bin/tmux

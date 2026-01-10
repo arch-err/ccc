@@ -370,7 +370,7 @@ cmd_new() {
         -e "CLAUDE_HOST_HOME=$HOME"
         -e "TERM=${TERM:-xterm-256color}"
         -v "$directory:$directory"
-        -v "$HOME/.claude:$HOME/.claude"
+        -v "$HOME/.claude:/host-claude:ro"
         -v "$HOME/.claude.json:$HOME/.claude.json"
         --network host
         --label "${LABEL_PREFIX}.managed=true"
