@@ -229,6 +229,11 @@ get_stopped_containers() {
 # Check other backend for containers and show hint if found
 # Usage: hint_other_backend "list" or hint_other_backend "attach"
 hint_other_backend() {
+    # Check if hints are disabled in config
+    local hints_enabled
+    hints_enabled=$(load_config_value hints 2>/dev/null)
+    [[ "$hints_enabled" == "false" ]] && return
+
     local cmd="${1:-}"
     local other_backend=""
     local other_count=0
@@ -599,6 +604,35 @@ cmd_stop() {
     fi
 }
 
+cmd_prune() {
+    local containers
+    containers=$(get_stopped_containers)
+
+    if [[ -z "$containers" ]]; then
+        info "No stopped containers to prune"
+        hint_other_backend "prune"
+        return 0
+    fi
+
+    local count
+    count=$(echo "$containers" | wc -l)
+
+    echo "Containers to remove:"
+    echo "$containers" | gum style --foreground 3
+    echo ""
+
+    if gum confirm "Remove $count stopped container(s)?"; then
+        echo "$containers" | while read -r container; do
+            if [[ -n "$container" ]]; then
+                $CONTAINER_RUNTIME rm "$container" >/dev/null 2>&1
+                success "Removed: $container"
+            fi
+        done
+    else
+        info "Cancelled"
+    fi
+}
+
 cmd_start() {
     local name=""
     local attach=false
@@ -843,6 +877,35 @@ cmd_exec() {
     $CONTAINER_RUNTIME exec -it -e "HOME=$HOME" "$name" "${cmd_args[@]}"
 }
 
+cmd_config() {
+    local config_file
+    config_file=$(get_config_file)
+    local config_dir
+    config_dir=$(dirname "$config_file")
+
+    # Create config dir and file if they don't exist
+    if [[ ! -f "$config_file" ]]; then
+        mkdir -p "$config_dir"
+        # Copy example config if available
+        if [[ -f "${SCRIPT_DIR}/example_config/config.yaml" ]]; then
+            cp "${SCRIPT_DIR}/example_config/config.yaml" "$config_file"
+            info "Created config file from example"
+        else
+            # Create minimal config
+            cat > "$config_file" << 'EOF'
+# ccc configuration
+backend: auto
+hints: true
+EOF
+            info "Created new config file"
+        fi
+    fi
+
+    # Open in editor
+    local editor="${EDITOR:-${VISUAL:-vi}}"
+    "$editor" "$config_file"
+}
+
 cmd_help() {
     gum style --bold --foreground 5 --border double --padding "0 2" \
         "ccc - Claude Code Container CLI"
@@ -858,9 +921,11 @@ cmd_help() {
         "  **list**     List managed containers (alias: ls)" \
         "  **start**    Start a stopped container" \
         "  **stop**     Stop containers" \
+        "  **prune**    Remove all stopped containers" \
         "  **attach**   Attach to a running container" \
         "  **logs**     View container logs" \
         "  **exec**     Execute command in container" \
+        "  **config**   Edit configuration file" \
         "  **help**     Show this help"
 
     echo ""
@@ -964,6 +1029,9 @@ main() {
         stop)
             cmd_stop "$@"
             ;;
+        prune)
+            cmd_prune "$@"
+            ;;
         attach)
             cmd_attach "$@"
             ;;
@@ -972,6 +1040,9 @@ main() {
             ;;
         exec)
             cmd_exec "$@"
+            ;;
+        config)
+            cmd_config "$@"
             ;;
         help)
             cmd_help

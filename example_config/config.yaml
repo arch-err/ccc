@@ -9,3 +9,7 @@
 # - podman: Use Podman (rootless)
 # - auto: Auto-detect (Docker first, then Podman)
 backend: auto
+
+# Show hints when containers exist in other backends
+# Set to false to disable hints
+hints: true
