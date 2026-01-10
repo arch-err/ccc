@@ -412,20 +412,15 @@ cmd_new() {
         claude_args+=($cc_args)
     fi
 
-    # Handle prompt
+    # Handle prompt - load content but don't pass to claude
+    local prompt_text=""
     if [[ -n "$prompt" ]]; then
-        # Create temp file for prompt
-        local prompt_tmp
-        prompt_tmp=$(mktemp)
-        echo "$prompt" > "$prompt_tmp"
-        run_args+=(-v "$prompt_tmp:/tmp/claude-prompt.md:ro")
-        claude_args+=(-p "$(cat "$prompt_tmp")")
+        prompt_text="$prompt"
     elif [[ -n "$prompt_file" ]]; then
         if [[ ! -f "$prompt_file" ]]; then
             die "Prompt file not found: $prompt_file"
         fi
-        run_args+=(-v "$(realpath "$prompt_file"):/tmp/claude-prompt.md:ro")
-        claude_args+=(-p "$(cat "$prompt_file")")
+        prompt_text=$(cat "$prompt_file")
     fi
 
     # Enable internal tmux mode
@@ -435,7 +430,7 @@ cmd_new() {
     # Always run detached first, then attach if interactive
     run_args+=(-d)
 
-    # Start container with tmux + claude
+    # Start container with tmux + claude (no -p flag, stays interactive)
     local container_id
     if [[ "$QUIET" == true ]]; then
         container_id=$($CONTAINER_RUNTIME "${run_args[@]}" "$IMAGE_NAME" claude "${claude_args[@]}" 2>/dev/null)
@@ -446,6 +441,17 @@ cmd_new() {
 
     # Wait for tmux socket to be ready
     sleep 0.5
+
+    # Send prompt via tmux send-keys if provided
+    if [[ -n "$prompt_text" ]]; then
+        # Wait a bit more for Claude TUI to initialize
+        sleep 1.5
+        # Send text and Enter separately to ensure Enter is processed
+        $CONTAINER_RUNTIME exec "$name" \
+            /usr/bin/tmux.real -S /tmp/ccc.sock send-keys -t main "$prompt_text"
+        $CONTAINER_RUNTIME exec "$name" \
+            /usr/bin/tmux.real -S /tmp/ccc.sock send-keys -t main Enter
+    fi
 
     if [[ "$interactive" == true ]]; then
         # Attach to the tmux session
