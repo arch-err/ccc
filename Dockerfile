@@ -56,11 +56,18 @@ ENV PATH="/usr/local/bin:/root/.nix-profile/bin:/nix/var/nix/profiles/default/bi
 ENV BASH_ENV="/etc/bashrc"
 ENV GIT_TERMINAL_PROMPT=0
 
+# Install tmux config for internal ccc use
+COPY tmux.conf /etc/ccc-tmux.conf
+
+# Create tmux wrapper to prevent accidental tmux usage
+# Move real tmux binary and install wrapper
+COPY tmux-wrapper.sh /usr/local/bin/tmux
+RUN chmod +x /usr/local/bin/tmux && \
+    cp /root/.nix-profile/bin/tmux /usr/bin/tmux.real
+
 # Copy entrypoint (world-executable for non-root user support)
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod 755 /entrypoint.sh
-
-
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["claude"]

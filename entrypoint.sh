@@ -17,4 +17,18 @@ export LD_PRELOAD="/usr/local/lib/libfakeuid.so"
 mkdir -p "$HOST_PATH" 2>/dev/null || true
 cd "$HOST_PATH"
 
-exec "$@"
+# Check if we should start tmux server (CCC_USE_TMUX env var)
+if [ "${CCC_USE_TMUX:-false}" = "true" ]; then
+    # Start tmux server with detached session
+    /usr/bin/tmux.real \
+        -S /tmp/ccc.sock \
+        -f /etc/ccc-tmux.conf \
+        new-session -d -s main "$@"
+
+    # Keep container alive by waiting on tmux server
+    # This exits when tmux server terminates (all sessions closed)
+    exec /usr/bin/tmux.real -S /tmp/ccc.sock wait-for ccc-exit
+else
+    # Legacy mode: run command directly
+    exec "$@"
+fi

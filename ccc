@@ -428,37 +428,32 @@ cmd_new() {
         claude_args+=(-p "$(cat "$prompt_file")")
     fi
 
-    # Interactive or daemon mode
-    if [[ "$interactive" == true ]]; then
-        run_args+=(-it)
-        run_args+=(--label "${LABEL_PREFIX}.mode=interactive")
-        info "Starting interactive session..."
-        info "Session ID: $session_id"
-        info "Detach with Ctrl+P,Q, reattach with: ccc attach"
+    # Enable internal tmux mode
+    run_args+=(-e "CCC_USE_TMUX=true")
+    run_args+=(--label "${LABEL_PREFIX}.mode=tmux")
 
-        # Run container
-        $CONTAINER_RUNTIME "${run_args[@]}" "$IMAGE_NAME" claude "${claude_args[@]}"
+    # Always run detached first, then attach if interactive
+    run_args+=(-d)
+
+    # Start container with tmux + claude
+    local container_id
+    if [[ "$QUIET" == true ]]; then
+        container_id=$($CONTAINER_RUNTIME "${run_args[@]}" "$IMAGE_NAME" claude "${claude_args[@]}" 2>/dev/null)
     else
-        run_args+=(-d)
-        run_args+=(--label "${LABEL_PREFIX}.mode=headless")
+        container_id=$(gum spin --spinner dot --title "Starting container..." -- \
+            $CONTAINER_RUNTIME "${run_args[@]}" "$IMAGE_NAME" claude "${claude_args[@]}")
+    fi
 
-        # Start container with keep-alive process (restartable)
-        local container_id
-        if [[ "$QUIET" == true ]]; then
-            container_id=$($CONTAINER_RUNTIME "${run_args[@]}" "$IMAGE_NAME" \
-                tail -f /dev/null 2>/dev/null)
-        else
-            container_id=$(gum spin --spinner dot --title "Starting container..." -- \
-                $CONTAINER_RUNTIME "${run_args[@]}" "$IMAGE_NAME" \
-                tail -f /dev/null)
-        fi
+    # Wait for tmux socket to be ready
+    sleep 0.5
 
-        # Run claude with the prompt via exec (separate from container's main process)
-        # LD_PRELOAD is set in container to fake UID for godmode
-        info "Running prompt..."
-        $CONTAINER_RUNTIME exec -e "HOME=$HOME" -e "LD_PRELOAD=/usr/local/lib/libfakeuid.so" "$name" claude "${claude_args[@]}"
-
-        success "Prompt completed: $name"
+    if [[ "$interactive" == true ]]; then
+        # Attach to the tmux session
+        info "Attaching to session (detach with Ctrl+], d)"
+        info "Session ID: $session_id"
+        $CONTAINER_RUNTIME exec -it "$name" /usr/bin/tmux.real -S /tmp/ccc.sock attach-session -t main
+    else
+        success "Container started: $name"
         info "Session ID: $session_id"
         info "Attach with: ccc attach -n $name"
 
@@ -741,34 +736,24 @@ cmd_attach() {
         fi
     fi
 
-    # Get session ID, mode, godmode, and runtime from container labels
-    local session_id mode godmode container_runtime
-    session_id=$($CONTAINER_RUNTIME inspect "$name" --format '{{index .Config.Labels "ccc.session-id"}}' 2>/dev/null)
+    # Check container mode
+    local mode
     mode=$($CONTAINER_RUNTIME inspect "$name" --format '{{index .Config.Labels "ccc.mode"}}' 2>/dev/null)
-    godmode=$($CONTAINER_RUNTIME inspect "$name" --format '{{index .Config.Labels "ccc.godmode"}}' 2>/dev/null)
-    container_runtime=$($CONTAINER_RUNTIME inspect "$name" --format '{{index .Config.Labels "ccc.runtime"}}' 2>/dev/null)
 
-    if [[ "$mode" == "interactive" ]]; then
-        # Interactive mode: attach to the running claude process
-        info "Attaching to interactive session (Ctrl+P, Ctrl+Q to detach)"
-        $CONTAINER_RUNTIME attach "$name"
-    elif [[ -n "$session_id" ]]; then
-        # Headless mode: exec with --resume to continue the session
-        info "Resuming session: $session_id"
-        local claude_cmd=(claude --resume "$session_id")
-        # Enable godmode if container was created with -g
-        if [[ "$godmode" == "true" ]]; then
-            claude_cmd+=(--dangerously-skip-permissions)
-            info "Godmode enabled"
-        fi
-        # LD_PRELOAD fakes UID for godmode support
-        $CONTAINER_RUNTIME exec -it -e "HOME=$HOME" -e "LD_PRELOAD=/usr/local/lib/libfakeuid.so" "$name" "${claude_cmd[@]}"
-    else
-        # Fallback: just attach
-        warn "No session ID found, using container attach"
-        info "Attaching to $name (Ctrl+P, Ctrl+Q to detach)"
-        $CONTAINER_RUNTIME attach "$name"
+    if [[ "$mode" != "tmux" ]]; then
+        die "Container '$name' is not in tmux mode. Use 'ccc exec -n $name --shell' for shell access."
     fi
+
+    # Get session ID for display
+    local session_id
+    session_id=$($CONTAINER_RUNTIME inspect "$name" --format '{{index .Config.Labels "ccc.session-id"}}' 2>/dev/null)
+    if [[ -n "$session_id" ]]; then
+        info "Session ID: $session_id"
+    fi
+
+    # Attach to the tmux session
+    info "Attaching to session (detach with Ctrl+], d)"
+    $CONTAINER_RUNTIME exec -it "$name" /usr/bin/tmux.real -S /tmp/ccc.sock attach-session -t main
 }
 
 cmd_logs() {
@@ -813,19 +798,31 @@ cmd_logs() {
         die "Container not found: $name"
     fi
 
-    local log_args=(logs)
+    # Check container mode
+    local mode
+    mode=$($CONTAINER_RUNTIME inspect "$name" --format '{{index .Config.Labels "ccc.mode"}}' 2>/dev/null)
 
-    if [[ "$follow" == true ]]; then
-        log_args+=(-f)
+    # For tmux mode running containers, use tmux capture
+    if [[ "$mode" == "tmux" ]] && container_running "$name"; then
+        # Capture tmux pane content (scrollback)
+        $CONTAINER_RUNTIME exec "$name" /usr/bin/tmux.real -S /tmp/ccc.sock capture-pane -t main -p -S -1000
+        if [[ "$follow" == true ]]; then
+            info "Use 'ccc attach' to see live output"
+        fi
+    else
+        # Standard container logs for non-tmux or stopped containers
+        local log_args=(logs)
+        if [[ "$follow" == true ]]; then
+            log_args+=(-f)
+        fi
+        log_args+=("$name")
+        $CONTAINER_RUNTIME "${log_args[@]}"
     fi
-
-    log_args+=("$name")
-
-    $CONTAINER_RUNTIME "${log_args[@]}"
 }
 
 cmd_exec() {
     local name=""
+    local shell_mode=false
     local cmd_args=()
 
     while [[ $# -gt 0 ]]; do
@@ -833,6 +830,10 @@ cmd_exec() {
             -n|--name)
                 name="$2"
                 shift 2
+                ;;
+            --shell)
+                shell_mode=true
+                shift
                 ;;
             --)
                 shift
@@ -869,12 +870,26 @@ cmd_exec() {
         die "Container '$name' is not running"
     fi
 
-    if [[ ${#cmd_args[@]} -eq 0 ]]; then
-        # Default to shell
-        cmd_args=(sh)
-    fi
+    # Check container mode
+    local mode
+    mode=$($CONTAINER_RUNTIME inspect "$name" --format '{{index .Config.Labels "ccc.mode"}}' 2>/dev/null)
 
-    $CONTAINER_RUNTIME exec -it -e "HOME=$HOME" "$name" "${cmd_args[@]}"
+    if [[ "$shell_mode" == true ]] || [[ ${#cmd_args[@]} -eq 0 ]]; then
+        # Shell mode: run command directly in container
+        if [[ ${#cmd_args[@]} -eq 0 ]]; then
+            cmd_args=(sh)
+        fi
+        $CONTAINER_RUNTIME exec -it -e "HOME=$HOME" "$name" "${cmd_args[@]}"
+    elif [[ "$mode" == "tmux" ]]; then
+        # Send command to claude TUI via tmux send-keys
+        local cmd_string="${cmd_args[*]}"
+        $CONTAINER_RUNTIME exec "$name" /usr/bin/tmux.real -S /tmp/ccc.sock send-keys -t main "$cmd_string" Enter
+        info "Sent to TUI: $cmd_string"
+    else
+        # Non-tmux container - can only run shell commands
+        warn "Container not in tmux mode - running command in shell"
+        $CONTAINER_RUNTIME exec -it -e "HOME=$HOME" "$name" "${cmd_args[@]}"
+    fi
 }
 
 cmd_config() {
@@ -924,7 +939,7 @@ cmd_help() {
         "  **prune**    Remove all stopped containers" \
         "  **attach**   Attach to a running container" \
         "  **logs**     View container logs" \
-        "  **exec**     Execute command in container" \
+        "  **exec**     Send command to TUI or run in shell" \
         "  **config**   Edit configuration file" \
         "  **help**     Show this help"
 
@@ -945,6 +960,14 @@ cmd_help() {
     gum format -- \
         "  **-n, --name** <name>   Container name" \
         "  **-a, --attach**        Attach after starting"
+
+    echo ""
+    gum style --bold "ccc exec options:"
+    gum format -- \
+        "  **-n, --name** <name>   Container name" \
+        "  **--shell**             Run command in container shell (not TUI)" \
+        "  **command**             Command to send to TUI (default)" \
+        "  **(no args)**           Opens interactive shell (--shell implied)"
 
     echo ""
     gum style --bold "Global options:"
@@ -969,6 +992,12 @@ cmd_help() {
     echo ""
     gum style --foreground 8 "  # Restart a stopped container and attach"
     echo "  ccc start -a"
+    echo ""
+    gum style --foreground 8 "  # Send a command to Claude TUI"
+    echo "  ccc exec -n mycontainer 'help me debug this'"
+    echo ""
+    gum style --foreground 8 "  # Run a shell command inside the container"
+    echo "  ccc exec -n mycontainer --shell ls -la"
 }
 
 # =============================================================================
