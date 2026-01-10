@@ -30,25 +30,52 @@ ccc stop -n <container-name>
 
 ## Requirements
 
-- **Podman** (recommended) or **Docker**
-- **gum** (for pretty terminal UI) - auto-installed via nix-shell if missing
-- Your `~/.claude` directory with valid credentials
+| Dependency | Required | Description |
+|------------|----------|-------------|
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Yes | The CLI tool this wraps |
+| [Docker](https://docs.docker.com/get-docker/) | One of | Container runtime |
+| [Podman](https://podman.io/getting-started/installation) | One of | Container runtime (recommended) |
+| [gum](https://github.com/charmbracelet/gum) | Optional | Pretty terminal UI |
 
 ## Installation
 
+### Quick Install (Recommended)
+
 ```bash
-# Clone the repository
-git clone <repo-url>
-cd claude-container
-
-# Build the container image
-podman build -t claude-code-sandbox:latest .
-
-# (Optional) Add to PATH
-ln -s $(pwd)/ccc ~/.local/bin/ccc
+curl -fsSL https://raw.githubusercontent.com/arch-err/ccc/main/install.sh | bash
 ```
 
-No additional setup required! The container uses LD_PRELOAD to fake UIDs, giving godmode support without any host-side permission changes.
+This will:
+1. Clone the repository to `~/.local/share/ccc`
+2. Run the interactive installer (detects runtimes, checks dependencies)
+3. Create symlink at `~/.local/bin/ccc`
+
+### Manual Install
+
+```bash
+git clone https://github.com/arch-err/ccc.git ~/.local/share/ccc
+cd ~/.local/share/ccc
+make install
+```
+
+### Pull Container Image
+
+After installation, pull the pre-built container:
+
+```bash
+# With Podman
+podman pull ghcr.io/arch-err/ccc:latest
+
+# With Docker
+docker pull ghcr.io/arch-err/ccc:latest
+```
+
+Or build it locally:
+
+```bash
+cd ~/.local/share/ccc
+make build
+```
 
 ## Usage
 
@@ -94,14 +121,6 @@ ccc logs -n <name> -f  # follow mode
 ccc exec -n <name> -- ls -la
 ccc exec -n <name>  # opens a shell
 ```
-
-## Supported Runtimes
-
-| Runtime | Godmode | Notes |
-|---------|---------|-------|
-| Podman (rootless) | Yes | Recommended |
-| Docker (rootful) | Yes | Works via userns mapping |
-| Docker (rootless) | Yes | Works via LD_PRELOAD |
 
 ## How It Works
 
