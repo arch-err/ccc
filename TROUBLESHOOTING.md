@@ -13,198 +13,126 @@ Claude Code refuses to run with godmode when `uid == 0`:
 --dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons
 ```
 
-In rootless Podman, containers run as root (uid 0) by default. This creates a conflict.
+In rootless Podman, containers run as root (uid 0) by default. This creates a conflict:
+- We need uid 0 (root) for file access (mounted files appear as root:root)
+- Claude refuses godmode when uid == 0
 
 ### What We Tried (And Why It Failed)
 
 #### Attempt 1: `--userns=keep-id`
 
-Podman's `--userns=keep-id` maps your host UID to the same UID inside the container:
-- Host uid 1000 → Container uid 1000
-- Godmode would work (uid != 0)
+Podman's `--userns=keep-id` maps your host UID to the same UID inside the container. Godmode would work (uid != 0).
 
-**Problem**: Extremely slow with complex images. Podman creates "ID-mapped copies" of every layer. With the nix-based image (many layers), this took 2+ minutes and often timed out.
+**Problem**: Extremely slow with complex images. Podman creates "ID-mapped copies" of every layer. With the nix-based image, this took 2+ minutes and often timed out.
 
-```
-Error: creating container storage: creating an ID-mapped copy of layer "...": signal: terminated
-```
+#### Attempt 2: User Switching with gosu
 
-#### Attempt 2: Run as Root, Use gosu to Switch
+Run as root, then use `gosu` to switch to uid 1000 for Claude.
 
-Without `--userns=keep-id`:
-- Container runs as root (uid 0)
-- Root inside = host user outside (rootless podman mapping)
-- Use `gosu` to switch to uid 1000 for godmode
+**Problem**: File permissions broke. Mounted files appear as `root:root` inside the container. When we switch to uid 1000, that user can't read root-owned files.
 
-**Problem**: File permissions broke. Mounted files appear as `root:root` inside the container. When we switch to uid 1000 via gosu, that user can't access root-owned files.
+#### Attempt 3: ACLs for Group Access
 
-```
-Error: EACCES: permission denied, open '/home/user/.claude.json'
-```
+Create a user in root group (gid 0), then use ACLs on host files to grant group access.
 
-Why? In rootless Podman:
-- Host uid 1000 → Container uid 0 (root)
-- Container uid 1000 → Host subordinate uid (e.g., 100999)
+**Problem**: Requires setting ACLs on every project directory. Not sustainable.
 
-So `gosu 1000` inside the container is NOT the same as your host user.
+### The Solution: LD_PRELOAD
 
-#### Attempt 3: Create User in Root Group
+The elegant solution: **fake the UID**.
 
-The insight: files appear as `root:root` (gid 0) inside the container. If we create a user with gid 0 as their primary group, they could access files via group permissions.
+We created a tiny shared library that intercepts `getuid()`, `geteuid()`, `getgid()`, and `getegid()` syscalls and returns 1000 instead of 0.
 
-```bash
-useradd -u 1000 -g 0 -G 0 ...  # Primary group = root (gid 0)
+```c
+// libfakeuid.so
+uid_t getuid(void) { return 1000; }
+uid_t geteuid(void) { return 1000; }
+gid_t getgid(void) { return 1000; }
+gid_t getegid(void) { return 1000; }
 ```
 
-**Problem**: Files on host are `rw-------` (600). Even with correct group membership, there are no group permissions to use.
-
-```
--rw------- 1 root root 46812 ... /home/user/.claude.json
-```
-
-### The Solution: ACLs
-
-**Access Control Lists (ACLs)** let us add group permissions without changing the base `chmod` permissions.
-
-```bash
-# On the host, grant group read/write via ACL
-setfacl -R -m g::rwX ~/.claude
-setfacl -R -d -m g::rwX ~/.claude  # Default ACL for new files
-setfacl -m g::rw ~/.claude.json
-```
-
-Now inside the container:
-- Files still appear as `root:root`
-- But ACL grants group 0 (root) read/write access
-- Our user (uid 1000, gid 0) can access via group ACL
+The entrypoint sets `LD_PRELOAD=/usr/local/lib/libfakeuid.so`, so:
+- **Actual user**: root (uid 0) - has full file access
+- **Perceived user**: uid 1000 - Claude accepts godmode
 
 ### Final Architecture
 
 ```
-Host                          Container
-────                          ─────────
-uid 1000 (you)        ───►    uid 0 (root)
-gid 1000 (you)        ───►    gid 0 (root)
+Container Reality                    What Claude Sees
+──────────────────                   ────────────────
+uid=0 (root)           ──►           uid=1000
+Full file access       ──►           "Not root, godmode OK!"
 
-File: ~/.claude.json
-Owner: you:you        ───►    Appears as: root:root
-Perms: rw-------              Perms: rw------- (but ACL grants g::rw)
-
-Container user:
-uid 1000, gid 0 (root group)
-→ Not root (uid != 0) → godmode works
-→ In root group → ACL grants file access
+Mounted files:
+/home/user/project     ──►           Readable/writable (we're root)
+/home/user/.claude     ──►           Readable/writable (we're root)
 ```
 
 ## Common Issues
 
 ### "Invalid API key" or "Please run /login"
 
-Claude can't find credentials. Check:
+Claude can't find credentials. Check that `~/.claude` directory exists and contains `.credentials.json`:
 
-1. ACLs are set on `~/.claude`:
-   ```bash
-   getfacl ~/.claude/.credentials.json
-   # Should show: group::rw-
-   ```
-
-2. If not, set them:
-   ```bash
-   setfacl -R -m g::rwX ~/.claude
-   setfacl -m g::rw ~/.claude.json
-   ```
-
-### "EACCES: permission denied"
-
-File access issue inside container.
-
-1. Check which file is failing (in the error message)
-2. Set ACL on that file:
-   ```bash
-   setfacl -m g::rw /path/to/file
-   ```
-3. For directories, also set the default ACL:
-   ```bash
-   setfacl -d -m g::rwX /path/to/directory
-   ```
-
-### "--dangerously-skip-permissions cannot be used with root"
-
-The container is running as root. This happens when:
-
-1. Using Docker rootless (not supported for godmode)
-2. The `--user` flag isn't being passed to `exec`
-
-Check your runtime:
 ```bash
-./ccc list  # Shows runtime in output
+ls -la ~/.claude/.credentials.json
 ```
 
-For Podman, ensure the exec includes `--user`:
-```bash
-podman exec --user "$(id -u):0" container-name ...
-```
+If missing, run `claude` on your host first to authenticate.
 
 ### Container Hangs on Start
 
-If using `--userns=keep-id`, it may be creating ID-mapped layer copies. This is slow for images with many layers.
+If you accidentally use `--userns=keep-id`, it will be slow. The current ccc implementation avoids this, but if you're debugging:
 
-**Solution**: Don't use `--userns=keep-id`. The current ccc implementation avoids this.
-
-### "setfacl: Operation not permitted"
-
-Some files can't have ACLs set, usually because:
-- They're owned by another user/process
-- The filesystem doesn't support ACLs
-
-For files owned by another Claude session, you can usually ignore these errors - the important files (credentials, config) should work.
-
-### New Files Don't Have Correct Permissions
-
-When Claude creates new files in `~/.claude`, they need ACL inheritance.
-
-Set default ACLs:
 ```bash
-setfacl -R -d -m g::rwX ~/.claude
+# This is SLOW - don't use it
+podman run --userns=keep-id ...
+
+# This is FAST - what ccc uses
+podman run ...  # runs as root, LD_PRELOAD fakes UID
 ```
 
-The `-d` flag sets a default ACL that new files inherit.
+### Claude Shows Wrong UID
 
-## Verifying Your Setup
+If `id` inside the container shows uid=0 instead of uid=1000, LD_PRELOAD isn't working.
 
-### Check ACLs
+Check:
 ```bash
-# Files should show "group::rw-" in ACL
-getfacl ~/.claude.json
-getfacl ~/.claude/.credentials.json
+podman exec <container> sh -c 'echo $LD_PRELOAD'
+# Should show: /usr/local/lib/libfakeuid.so
+
+podman exec <container> ls -la /usr/local/lib/libfakeuid.so
+# Should exist
 ```
 
-### Check Container User
+If missing, rebuild the container image:
 ```bash
-# Should show uid=1000 gid=0(root)
-podman exec --user "$(id -u):0" <container> id
+podman build --no-cache -t claude-code-sandbox:latest .
 ```
 
-### Check File Access in Container
-```bash
-# Should succeed
-podman exec --user "$(id -u):0" <container> cat /home/you/.claude.json | head -1
-```
+### nix-shell Not Working
 
-### Check Godmode Works
-```bash
-# Should NOT show "cannot be used with root" error
-./ccc new -g -p "echo test"
-```
+`nix-shell -p <package>` should work inside the container. If it fails:
+
+1. Check you're running as root (which has nix access):
+   ```bash
+   podman exec <container> whoami  # Should show "root" (real uid)
+   ```
+
+2. Try a simple package:
+   ```bash
+   podman exec <container> nix-shell -p hello --run "hello"
+   ```
 
 ## Runtime Comparison
 
 | Feature | Podman (rootless) | Docker (rootful) | Docker (rootless) |
 |---------|-------------------|------------------|-------------------|
-| Godmode | Yes (with ACLs) | Yes | No |
-| Setup | ACLs required | None | N/A |
-| File ownership | Via ACL group | Via UID matching | Root only |
-| Security | Best | Good | Good (no godmode) |
+| Godmode | Yes | Yes | Yes |
+| Setup | None | None | None |
+| File access | Via root + LD_PRELOAD | Via root + LD_PRELOAD | Via root + LD_PRELOAD |
+
+All runtimes now work the same way thanks to the LD_PRELOAD approach.
 
 ## Nix Package Installation
 
@@ -226,10 +154,29 @@ nix-shell -p python3 nodejs --run "node -v && python3 --version"
 - tmux
 - git
 
-**How it works**: The entrypoint sets up nix profiles and permissions for the non-root user, allowing nix-shell to download and use packages from the nix cache.
+## Verifying Your Setup
+
+### Check UID Faking Works
+```bash
+# Inside container, should show uid=1000
+podman exec <container> id
+```
+
+### Check File Access
+```bash
+# Should succeed (we're actually root)
+podman exec <container> cat /home/you/.claude.json | head -1
+```
+
+### Check Godmode Works
+```bash
+# Should NOT show "cannot be used with root" error
+./ccc new -g -p "echo test"
+```
 
 ## Still Having Issues?
 
 1. Check container logs: `./ccc logs -n <name>`
 2. Shell into container: `./ccc exec -n <name>`
-3. Verify environment: `./ccc exec -n <name> -- env | grep CLAUDE`
+3. Verify environment: `./ccc exec -n <name> -- env | grep -E "(LD_PRELOAD|HOME)"`
+4. Rebuild image: `podman build --no-cache -t claude-code-sandbox:latest .`
