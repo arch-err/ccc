@@ -1,6 +1,6 @@
-# Troubleshooting Guide
+# Troubleshooting
 
-This document explains common issues and their solutions, including the journey to get godmode working with rootless Podman.
+Common issues and their solutions.
 
 ## The Godmode + Podman Challenge
 
@@ -9,11 +9,13 @@ Getting `--dangerously-skip-permissions` (godmode) to work with rootless Podman 
 ### The Core Problem
 
 Claude Code refuses to run with godmode when `uid == 0`:
+
 ```
 --dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons
 ```
 
 In rootless Podman, containers run as root (uid 0) by default. This creates a conflict:
+
 - We need uid 0 (root) for file access (mounted files appear as root:root)
 - Claude refuses godmode when uid == 0
 
@@ -52,6 +54,7 @@ gid_t getegid(void) { return 1000; }
 ```
 
 The entrypoint sets `LD_PRELOAD=/usr/local/lib/libfakeuid.so`, so:
+
 - **Actual user**: root (uid 0) - has full file access
 - **Perceived user**: uid 1000 - Claude accepts godmode
 
@@ -97,6 +100,7 @@ podman run ...  # runs as root, LD_PRELOAD fakes UID
 If `id` inside the container shows uid=0 instead of uid=1000, LD_PRELOAD isn't working.
 
 Check:
+
 ```bash
 podman exec <container> sh -c 'echo $LD_PRELOAD'
 # Should show: /usr/local/lib/libfakeuid.so
@@ -106,6 +110,7 @@ podman exec <container> ls -la /usr/local/lib/libfakeuid.so
 ```
 
 If missing, rebuild the container image:
+
 ```bash
 podman build --no-cache -t claude-code-sandbox:latest .
 ```
@@ -150,6 +155,7 @@ nix-shell -p python3 nodejs --run "node -v && python3 --version"
 ```
 
 **Pre-installed packages** (always available without nix-shell):
+
 - nodejs, npm
 - tmux
 - git
@@ -157,18 +163,21 @@ nix-shell -p python3 nodejs --run "node -v && python3 --version"
 ## Verifying Your Setup
 
 ### Check UID Faking Works
+
 ```bash
 # Inside container, should show uid=1000
 podman exec <container> id
 ```
 
 ### Check File Access
+
 ```bash
 # Should succeed (we're actually root)
 podman exec <container> cat /home/you/.claude.json | head -1
 ```
 
 ### Check Godmode Works
+
 ```bash
 # Should NOT show "cannot be used with root" error
 ./ccc new -g -p "echo test"

@@ -1,0 +1,59 @@
+site_name: ccc
+site_description: Claude Code Container - Run Claude Code in isolated containers
+site_url: https://arch-err.github.io/ccc
+repo_url: https://github.com/arch-err/ccc
+repo_name: arch-err/ccc
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - content.code.copy
+    - content.code.select
+  icon:
+    repo: fontawesome/brands/github
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Usage: usage.md
+  - Isolation: isolation.md
+  - Reference:
+    - CLI Commands: reference/cli.md
+    - Architecture: reference/architecture.md
+  - Troubleshooting: troubleshooting.md
+  - Container Environment: container-env.md
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - admonition
+  - pymdownx.details
+  - tables
+  - attr_list
+  - md_in_html
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/arch-err/ccc
