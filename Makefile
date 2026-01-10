@@ -1,8 +1,8 @@
 # Claude Code Sandbox Container
 # ==============================
 
-IMAGE_NAME := claude-code-sandbox
-REGISTRY := # Set your registry here (e.g., ghcr.io/username)
+IMAGE_NAME := ccc
+REGISTRY := ghcr.io/arch-err
 VERSION := latest
 
 # Host context (used for run/debug)
@@ -77,13 +77,10 @@ shell:
 		--network host \
 		$(IMAGE_NAME):$(VERSION) sh
 
-## push: Push image to registry (set REGISTRY variable first)
+## push: Push image to registry
 push:
-ifndef REGISTRY
-	$(error REGISTRY is not set. Use: make push REGISTRY=ghcr.io/username)
-endif
-	docker tag $(IMAGE_NAME):$(VERSION) $(REGISTRY)/$(IMAGE_NAME):$(VERSION)
-	docker push $(REGISTRY)/$(IMAGE_NAME):$(VERSION)
+	$(RUNTIME) tag $(IMAGE_NAME):$(VERSION) $(REGISTRY)/$(IMAGE_NAME):$(VERSION)
+	$(RUNTIME) push $(REGISTRY)/$(IMAGE_NAME):$(VERSION)
 
 ## clean: Remove the local image
 clean:

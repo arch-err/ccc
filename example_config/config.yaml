@@ -11,10 +11,10 @@
 backend: auto
 
 # Container image to use
-# Default: claude-code-sandbox:latest
-# For podman, localhost/ prefix is added automatically
+# Default: ghcr.io/arch-err/ccc:latest
+# For podman, localhost/ prefix is added automatically for local images
 # You can specify a custom image name or tag here
-image: claude-code-sandbox:latest
+image: ghcr.io/arch-err/ccc:latest
 
 # Show hints when containers exist in other backends
 # Set to false to disable hints

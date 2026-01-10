@@ -1,5 +1,12 @@
 FROM nixos/nix:latest
 
+# OCI labels for GitHub Container Registry
+LABEL org.opencontainers.image.source="https://github.com/arch-err/ccc"
+LABEL org.opencontainers.image.description="Claude Code Container - Run Claude Code in isolated containers with godmode"
+LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.title="ccc"
+LABEL org.opencontainers.image.url="https://github.com/arch-err/ccc"
+
 # Configure nix for flexibility
 RUN echo "experimental-features = nix-command flakes" >> /etc/nix/nix.conf && \
     echo "sandbox = false" >> /etc/nix/nix.conf
