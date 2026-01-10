@@ -226,6 +226,39 @@ get_stopped_containers() {
     $CONTAINER_RUNTIME ps -a --filter "label=${LABEL_PREFIX}.managed=true" --filter "status=exited" --format '{{.Names}}' 2>/dev/null
 }
 
+# Check other backend for containers and show hint if found
+# Usage: hint_other_backend "list" or hint_other_backend "attach"
+hint_other_backend() {
+    local cmd="${1:-}"
+    local other_backend=""
+    local other_count=0
+
+    # Determine the other backend
+    case "$CONTAINER_RUNTIME" in
+        docker)
+            if has_podman; then
+                other_backend="podman"
+                other_count=$(podman ps -a --filter "label=${LABEL_PREFIX}.managed=true" --format '{{.Names}}' 2>/dev/null | wc -l)
+            fi
+            ;;
+        podman)
+            if has_docker; then
+                other_backend="docker"
+                other_count=$(docker ps -a --filter "label=${LABEL_PREFIX}.managed=true" --format '{{.Names}}' 2>/dev/null | wc -l)
+            fi
+            ;;
+    esac
+
+    # Show hint if other backend has containers
+    if [[ -n "$other_backend" ]] && [[ "$other_count" -gt 0 ]]; then
+        echo ""
+        gum style --foreground 3 "Hint: Found $other_count container(s) in $other_backend"
+        if [[ -n "$cmd" ]]; then
+            gum style --foreground 8 "  Try: ccc -b $other_backend $cmd"
+        fi
+    fi
+}
+
 # =============================================================================
 # Commands
 # =============================================================================
@@ -456,6 +489,7 @@ cmd_list() {
 
         if [[ -z "$containers" ]] || [[ "$containers" == "NAMES"* && $(echo "$containers" | wc -l) -eq 1 ]]; then
             info "No containers found"
+            hint_other_backend "list"
         else
             # ANSI color codes
             local R=$'\e[0m'        # Reset
@@ -463,6 +497,7 @@ cmd_list() {
             local DIM=$'\e[2m'      # Dim
             local GRN=$'\e[32m'
             local MAG=$'\e[35m'
+            local CYN=$'\e[36m'     # Cyan
             local GRY=$'\e[90m'     # Dark gray
 
             # Print colored header
@@ -473,6 +508,9 @@ cmd_list() {
                 if [[ "$line" == *"Up "* ]]; then
                     # Running: green
                     echo -e "${GRN}${line}${R}"
+                elif [[ "$line" == *"Created"* ]]; then
+                    # Created but never started: cyan
+                    echo -e "${CYN}${line}${R}"
                 elif [[ "$line" == *"Exited"* ]]; then
                     # Stopped: dim gray
                     echo -e "${DIM}${GRY}${line}${R}"
@@ -510,6 +548,7 @@ cmd_stop() {
 
         if [[ -z "$containers" ]]; then
             info "No containers to stop"
+            hint_other_backend "stop -a"
             return 0
         fi
 
@@ -545,6 +584,7 @@ cmd_stop() {
 
         if [[ -z "$containers" ]]; then
             info "No containers to stop"
+            hint_other_backend "stop"
             return 0
         fi
 
@@ -585,7 +625,9 @@ cmd_start() {
         containers=$(get_stopped_containers)
 
         if [[ -z "$containers" ]]; then
-            die "No stopped containers to start"
+            info "No stopped containers to start"
+            hint_other_backend "start"
+            return 0
         fi
 
         name=$(echo "$containers" | gum choose --header "Select container to start:")
@@ -642,7 +684,9 @@ cmd_attach() {
         containers=$(get_running_containers)
 
         if [[ -z "$containers" ]]; then
-            die "No running containers to attach to"
+            info "No running containers to attach to"
+            hint_other_backend "attach"
+            return 0
         fi
 
         name=$(echo "$containers" | gum choose --header "Select container to attach:")
@@ -719,7 +763,9 @@ cmd_logs() {
         containers=$(get_containers "quiet")
 
         if [[ -z "$containers" ]]; then
-            die "No containers found"
+            info "No containers found"
+            hint_other_backend "logs"
+            return 0
         fi
 
         name=$(echo "$containers" | gum choose --header "Select container:")
@@ -773,7 +819,9 @@ cmd_exec() {
         containers=$(get_running_containers)
 
         if [[ -z "$containers" ]]; then
-            die "No running containers"
+            info "No running containers"
+            hint_other_backend "exec"
+            return 0
         fi
 
         name=$(echo "$containers" | gum choose --header "Select container:")
