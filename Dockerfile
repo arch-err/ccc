@@ -15,7 +15,7 @@ RUN echo "experimental-features = nix-command flakes" >> /etc/nix/nix.conf && \
 RUN nix-env -iA nixpkgs.nodejs nixpkgs.tmux
 
 # Install packages from packages.yaml
-COPY packages.yaml /packages.yaml
+COPY container/packages.yaml /packages.yaml
 RUN nix-env -iA $(nix-shell -p yq-go --run "yq -r '.packages[].name | \"nixpkgs.\" + .' /packages.yaml" | tr '\n' ' ')
 
 # Create fake UID library for godmode support
@@ -74,20 +74,20 @@ ENV GIT_TERMINAL_PROMPT=0
 ENV EDITOR=vim
 
 # Install tmux config for internal ccc use
-COPY tmux.conf /etc/ccc-tmux.conf
+COPY container/tmux.conf /etc/ccc-tmux.conf
 
 # Install container-specific Claude commands and documentation
-COPY commands/ /ccc/commands/
-COPY container-CLAUDE.md /ccc/CLAUDE.md
+COPY container/commands/ /ccc/commands/
+COPY container/container-CLAUDE.md /ccc/CLAUDE.md
 
 # Create tmux wrapper to prevent accidental tmux usage
 # Move real tmux binary and install wrapper
-COPY tmux-wrapper.sh /usr/local/bin/tmux
+COPY container/tmux-wrapper.sh /usr/local/bin/tmux
 RUN chmod +x /usr/local/bin/tmux && \
     cp /root/.nix-profile/bin/tmux /usr/bin/tmux.real
 
 # Copy entrypoint (world-executable for non-root user support)
-COPY entrypoint.sh /entrypoint.sh
+COPY container/entrypoint.sh /entrypoint.sh
 RUN chmod 755 /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
