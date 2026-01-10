@@ -1,11 +1,18 @@
 # ccc - Claude Code Container
+<p align="center">
+  <img src="assets/claude_container_no_background.jpg" alt="ccc logo" width="400">
+</p>
 
+
+<p align="center">
+
+[![Claude](https://img.shields.io/badge/Claude-D97757?logo=anthropic&logoColor=fff)](https://claude.ai)
 [![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=fff)](https://www.docker.com/)
 [![Podman](https://img.shields.io/badge/Podman-892CA0?logo=podman&logoColor=fff)](https://podman.io/)
 [![Bash](https://img.shields.io/badge/Bash-4EAA25?logo=gnubash&logoColor=fff)](https://www.gnu.org/software/bash/)
-[![Gum](https://img.shields.io/badge/Gum-FF5F87?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyQzYuNDggMiAyIDYuNDggMiAxMnM0LjQ4IDEwIDEwIDEwIDEwLTQuNDggMTAtMTBTMTcuNTIgMiAxMiAyem0wIDE4Yy00LjQxIDAtOC0zLjU5LTgtOHMzLjU5LTggOC04IDggMy41OSA4IDgtMy41OSA4LTggOHoiLz48L3N2Zz4=)](https://github.com/charmbracelet/gum)
-[![Claude](https://img.shields.io/badge/Claude-D97757?logo=anthropic&logoColor=fff)](https://claude.ai)
-[![Vibe Coded](https://img.shields.io/badge/vibe%20coded%20with%20%E2%9D%A4%EF%B8%8F%20by%20claude%20code-8A2BE2)](https://claude.ai/)
+[![gum](https://img.shields.io/badge/Gum-FF5F87?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyQzYuNDggMiAyIDYuNDggMiAxMnM0LjQ4IDEwIDEwIDEwIDEwLTQuNDggMTAtMTBTMTcuNTIgMiAxMiAyem0wIDE4Yy00LjQxIDAtOC0zLjU5LTgtOHMzLjU5LTggOC04IDggMy41OSA4IDgtMy41OSA4LTggOHoiLz48L3N2Zz4=)](https://github.com/charmbracelet/gum)
+
+</p>
 
 CLI for running Claude Code in isolated containers, so you can use --dangerously-skip-permissions without feeling guilty
 
