@@ -17,6 +17,28 @@ IMAGE_NAME=""
 QUIET=false
 CONTAINER_RUNTIME=""  # Will be set by detect_runtime()
 RUNTIME_MODE=""       # "podman", "docker-rootful", "docker-rootless"
+BACKEND_OVERRIDE=""   # Set by -b/--backend flag
+
+# =============================================================================
+# Configuration
+# =============================================================================
+
+# Get config file path
+get_config_file() {
+    local config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/ccc"
+    echo "$config_dir/config.yaml"
+}
+
+# Load config value (simple grep-based YAML parsing)
+load_config_value() {
+    local key="$1"
+    local config_file
+    config_file=$(get_config_file)
+
+    [[ ! -f "$config_file" ]] && return 1
+
+    grep "^${key}:" "$config_file" 2>/dev/null | sed 's/^[^:]*: *//' | tr -d '"'"'"
+}
 
 # =============================================================================
 # Runtime Detection
@@ -38,15 +60,39 @@ is_docker_rootless() {
 }
 
 # Detect and select the best available container runtime
-# Priority: Podman > Docker rootful > Docker rootless
+# Priority: Docker > Podman (configurable via -b flag or config file)
 detect_runtime() {
-    if has_podman; then
-        CONTAINER_RUNTIME="podman"
-        RUNTIME_MODE="podman"
-        IMAGE_NAME="localhost/${IMAGE_NAME_BASE}"
-        return 0
-    fi
+    # Check for backend override (flag takes precedence over config)
+    local preferred="${BACKEND_OVERRIDE:-$(load_config_value backend 2>/dev/null)}"
+    preferred="${preferred:-auto}"
 
+    # If specific backend requested, try it first
+    case "$preferred" in
+        docker)
+            if has_docker; then
+                CONTAINER_RUNTIME="docker"
+                IMAGE_NAME="$IMAGE_NAME_BASE"
+                if is_docker_rootless; then
+                    RUNTIME_MODE="docker-rootless"
+                else
+                    RUNTIME_MODE="docker-rootful"
+                fi
+                return 0
+            fi
+            die "Docker requested but not available"
+            ;;
+        podman)
+            if has_podman; then
+                CONTAINER_RUNTIME="podman"
+                IMAGE_NAME="localhost/${IMAGE_NAME_BASE}"
+                RUNTIME_MODE="podman"
+                return 0
+            fi
+            die "Podman requested but not available"
+            ;;
+    esac
+
+    # Auto-detection: Docker first (default), then Podman
     if has_docker; then
         CONTAINER_RUNTIME="docker"
         IMAGE_NAME="$IMAGE_NAME_BASE"
@@ -55,6 +101,13 @@ detect_runtime() {
         else
             RUNTIME_MODE="docker-rootful"
         fi
+        return 0
+    fi
+
+    if has_podman; then
+        CONTAINER_RUNTIME="podman"
+        IMAGE_NAME="localhost/${IMAGE_NAME_BASE}"
+        RUNTIME_MODE="podman"
         return 0
     fi
 
@@ -404,12 +457,29 @@ cmd_list() {
         if [[ -z "$containers" ]] || [[ "$containers" == "NAMES"* && $(echo "$containers" | wc -l) -eq 1 ]]; then
             info "No containers found"
         else
-            # Use gum table only if TTY available, otherwise just print
-            if [[ -t 1 ]]; then
-                echo "$containers" | gum table
-            else
-                echo "$containers"
-            fi
+            # ANSI color codes
+            local R=$'\e[0m'        # Reset
+            local B=$'\e[1m'        # Bold
+            local DIM=$'\e[2m'      # Dim
+            local GRN=$'\e[32m'
+            local MAG=$'\e[35m'
+            local GRY=$'\e[90m'     # Dark gray
+
+            # Print colored header
+            echo -e "${B}${MAG}$(echo "$containers" | head -1)${R}"
+
+            # Print data rows with status coloring
+            echo "$containers" | tail -n +2 | while IFS= read -r line; do
+                if [[ "$line" == *"Up "* ]]; then
+                    # Running: green
+                    echo -e "${GRN}${line}${R}"
+                elif [[ "$line" == *"Exited"* ]]; then
+                    # Stopped: dim gray
+                    echo -e "${DIM}${GRY}${line}${R}"
+                else
+                    echo "$line"
+                fi
+            done
         fi
     fi
 }
@@ -766,8 +836,9 @@ cmd_help() {
     echo ""
     gum style --bold "Global options:"
     gum format -- \
-        "  **-q, --quiet**   Suppress verbose output" \
-        "  **-h, --help**    Show help"
+        "  **-b, --backend** <name>  Container backend (docker, podman, auto)" \
+        "  **-q, --quiet**           Suppress verbose output" \
+        "  **-h, --help**            Show help"
 
     echo ""
     gum style --bold "Examples:"
@@ -799,6 +870,10 @@ main() {
             -q|--quiet)
                 QUIET=true
                 shift
+                ;;
+            -b|--backend)
+                BACKEND_OVERRIDE="$2"
+                shift 2
                 ;;
             -h|--help)
                 cmd_help
