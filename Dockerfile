@@ -19,6 +19,11 @@ RUN mkdir -p /usr/local/lib && \
     nix-shell -p gcc --run "gcc -shared -fPIC -o /usr/local/lib/libfakeuid.so /tmp/fakeuid.c" && \
     rm /tmp/fakeuid.c
 
+# Add passwd/group entries for faked UID 1000 (required for nix-shell to work)
+# nix-shell calls getpwuid() which fails without a passwd entry
+RUN echo 'sandbox:x:1000:1000:Sandbox User:/tmp:/bin/sh' >> /etc/passwd && \
+    echo 'sandbox:x:1000:' >> /etc/group
+
 # Install Claude Code globally
 RUN npm install -g @anthropic-ai/claude-code
 
