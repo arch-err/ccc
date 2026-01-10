@@ -1,6 +1,6 @@
 # ccc - Claude Code Container
 
-![ccc logo](assets/claude_container_no_background.jpg)
+![ccc logo](assets/claude_container_no_background.png)
 
 
 <p align="center">
