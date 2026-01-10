@@ -382,7 +382,7 @@ cmd_new() {
                 shift 2
                 ;;
             -*)
-                # Handle combined short flags like -ig, -gi, -igt, etc.
+                # Handle combined short flags like -ig, -gi, -igp "prompt", etc.
                 local flags="${1#-}"
                 shift
                 while [[ -n "$flags" ]]; do
@@ -394,6 +394,24 @@ cmd_new() {
                         t) tmux_mount=true ;;
                         c) clean_mode=true ;;
                         a) anonymous_mode=true ;;
+                        p)
+                            # -p takes next argument as prompt
+                            if [[ -n "$flags" ]]; then
+                                # Remaining chars are the prompt (e.g., -igpHello)
+                                prompt="$flags"
+                                flags=""
+                            elif [[ -n "$1" ]]; then
+                                # Next argument is the prompt
+                                if [[ "$1" == "-" ]]; then
+                                    prompt=$(cat)
+                                else
+                                    prompt="$1"
+                                fi
+                                shift
+                            else
+                                die "Flag -p requires a prompt argument"
+                            fi
+                            ;;
                         *) die "Unknown flag: -$flag" ;;
                     esac
                 done
