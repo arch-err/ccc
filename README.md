@@ -1,5 +1,10 @@
 # ccc - Claude Code Container
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![GitHub stars](https://img.shields.io/github/stars/arch-err/ccc)](https://github.com/arch-err/ccc/stargazers)
+[![Container](https://img.shields.io/badge/container-ghcr.io-blue)](https://ghcr.io/arch-err/ccc)
+[![Vibe Coded](https://img.shields.io/badge/vibe%20coded-with%20%E2%9D%A4%EF%B8%8F%20by%20Claude%20Code-blueviolet)](https://claude.ai)
+
 CLI for running Claude Code in isolated containers, so you can use --dangerously-skip-permissions without feeling guilty
 
 ## Why?
