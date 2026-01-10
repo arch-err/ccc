@@ -28,10 +28,13 @@ mkdir -p "$HOME/.claude"
 WRITABLE_DIRS="debug cache todos statsig telemetry shell-snapshots session-env file-history"
 
 # Symlink host's .claude contents (except writable dirs and commands)
+# Include hidden files like .credentials.json
 if [ -d /host-claude ]; then
-    for item in /host-claude/*; do
+    for item in /host-claude/* /host-claude/.*; do
         [ -e "$item" ] || continue
         name=$(basename "$item")
+        # Skip . and ..
+        [ "$name" = "." ] || [ "$name" = ".." ] && continue
         # Skip commands directory - we'll handle it specially
         [ "$name" = "commands" ] && continue
         # Skip writable directories - create fresh ones
