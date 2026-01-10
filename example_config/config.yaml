@@ -1,0 +1,11 @@
+# ccc - Claude Code Container Configuration
+# ==========================================
+# Copy this file to: $XDG_CONFIG_HOME/ccc/config.yaml
+# (typically ~/.config/ccc/config.yaml)
+
+# Container backend to use
+# Options: docker, podman, auto
+# - docker: Use Docker (rootful or rootless)
+# - podman: Use Podman (rootless)
+# - auto: Auto-detect (Docker first, then Podman)
+backend: auto

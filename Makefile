@@ -77,11 +77,18 @@ endif
 clean:
 	docker rmi $(IMAGE_NAME):$(VERSION) 2>/dev/null || true
 
-## install: Install ccc CLI to ~/.local/bin
+## install: Install ccc CLI to ~/.local/bin and config to ~/.config/ccc
 install:
 	@mkdir -p $(HOME)/.local/bin
 	@ln -sf $(shell pwd)/ccc $(HOME)/.local/bin/ccc
 	@echo "Installed ccc to ~/.local/bin/ccc"
+	@mkdir -p $${XDG_CONFIG_HOME:-$(HOME)/.config}/ccc
+	@if [ ! -f "$${XDG_CONFIG_HOME:-$(HOME)/.config}/ccc/config.yaml" ]; then \
+		cp $(shell pwd)/example_config/config.yaml $${XDG_CONFIG_HOME:-$(HOME)/.config}/ccc/config.yaml; \
+		echo "Installed default config to $${XDG_CONFIG_HOME:-$(HOME)/.config}/ccc/config.yaml"; \
+	else \
+		echo "Config already exists at $${XDG_CONFIG_HOME:-$(HOME)/.config}/ccc/config.yaml (not overwritten)"; \
+	fi
 	@echo "Make sure ~/.local/bin is in your PATH"
 
 ## uninstall: Remove ccc CLI from ~/.local/bin
