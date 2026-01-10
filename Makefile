@@ -13,11 +13,23 @@ TMUX_SOCKET := /tmp/tmux-$(shell id -u)
 # Auto-detect container runtime (prefer podman)
 RUNTIME := $(shell command -v podman 2>/dev/null || echo docker)
 
-.PHONY: build run debug shell push clean install uninstall help
+.PHONY: build build-podman build-docker transfer run debug shell push clean install uninstall help
 
 ## build: Build the container image (uses podman if available, else docker)
 build:
 	$(RUNTIME) build -t $(IMAGE_NAME):$(VERSION) .
+
+## build-podman: Build the container image with podman
+build-podman:
+	podman build -t $(IMAGE_NAME):$(VERSION) .
+
+## build-docker: Build the container image with docker
+build-docker:
+	docker build -t $(IMAGE_NAME):$(VERSION) .
+
+## transfer: Transfer image from podman to docker (podman save | docker load)
+transfer:
+	podman save $(IMAGE_NAME):$(VERSION) | docker load
 
 ## run: Run claude in the container (use from project directory)
 run:
@@ -109,7 +121,10 @@ help:
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/## /  /'
 	@echo ""
 	@echo "Examples:"
-	@echo "  make build              # Build the image"
+	@echo "  make build              # Build with auto-detected runtime"
+	@echo "  make build-podman       # Build with podman"
+	@echo "  make build-docker       # Build with docker"
+	@echo "  make transfer           # Copy image from podman to docker"
 	@echo "  make run                # Run claude (from any project dir)"
 	@echo "  make debug              # Debug with bash"
 	@echo "  make push REGISTRY=ghcr.io/user  # Push to registry"

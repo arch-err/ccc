@@ -10,6 +10,12 @@
 # - auto: Auto-detect (Docker first, then Podman)
 backend: auto
 
+# Container image to use
+# Default: claude-code-sandbox:latest
+# For podman, localhost/ prefix is added automatically
+# You can specify a custom image name or tag here
+image: claude-code-sandbox:latest
+
 # Show hints when containers exist in other backends
 # Set to false to disable hints
 hints: true

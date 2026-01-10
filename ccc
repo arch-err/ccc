@@ -6,11 +6,11 @@ set -euo pipefail
 # =============================================================================
 
 # Constants
-readonly IMAGE_NAME_BASE="claude-code-sandbox:latest"
+readonly DEFAULT_IMAGE_NAME="claude-code-sandbox:latest"
 readonly LABEL_PREFIX="ccc"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Image name (set after runtime detection - podman uses localhost/ prefix)
+# Image name (set after runtime detection and config loading)
 IMAGE_NAME=""
 
 # Globals
@@ -59,6 +59,23 @@ is_docker_rootless() {
     docker info 2>/dev/null | grep -q "rootless"
 }
 
+# Get the configured image name (with runtime-appropriate prefix)
+get_image_name() {
+    local runtime="$1"
+    local base_name
+
+    # Check config for custom image name
+    base_name=$(load_config_value image 2>/dev/null)
+    base_name="${base_name:-$DEFAULT_IMAGE_NAME}"
+
+    # Podman requires localhost/ prefix for local images without a registry
+    if [[ "$runtime" == "podman" ]] && [[ "$base_name" != */* ]]; then
+        echo "localhost/${base_name}"
+    else
+        echo "$base_name"
+    fi
+}
+
 # Detect and select the best available container runtime
 # Priority: Docker > Podman (configurable via -b flag or config file)
 detect_runtime() {
@@ -71,7 +88,7 @@ detect_runtime() {
         docker)
             if has_docker; then
                 CONTAINER_RUNTIME="docker"
-                IMAGE_NAME="$IMAGE_NAME_BASE"
+                IMAGE_NAME=$(get_image_name "docker")
                 if is_docker_rootless; then
                     RUNTIME_MODE="docker-rootless"
                 else
@@ -84,7 +101,7 @@ detect_runtime() {
         podman)
             if has_podman; then
                 CONTAINER_RUNTIME="podman"
-                IMAGE_NAME="localhost/${IMAGE_NAME_BASE}"
+                IMAGE_NAME=$(get_image_name "podman")
                 RUNTIME_MODE="podman"
                 return 0
             fi
@@ -95,7 +112,7 @@ detect_runtime() {
     # Auto-detection: Docker first (default), then Podman
     if has_docker; then
         CONTAINER_RUNTIME="docker"
-        IMAGE_NAME="$IMAGE_NAME_BASE"
+        IMAGE_NAME=$(get_image_name "docker")
         if is_docker_rootless; then
             RUNTIME_MODE="docker-rootless"
         else
@@ -106,7 +123,7 @@ detect_runtime() {
 
     if has_podman; then
         CONTAINER_RUNTIME="podman"
-        IMAGE_NAME="localhost/${IMAGE_NAME_BASE}"
+        IMAGE_NAME=$(get_image_name "podman")
         RUNTIME_MODE="podman"
         return 0
     fi
@@ -195,6 +212,24 @@ get_containers() {
         cmd_args+=(--format '{{.Names}}')
     elif [[ "$format" == "json" ]]; then
         cmd_args+=(--format 'json')
+    elif [[ "$format" == "detailed" ]]; then
+        # Custom detailed format with directory - uses inspect for each container
+        local containers
+        containers=$($CONTAINER_RUNTIME ps -a --filter "label=${LABEL_PREFIX}.managed=true" --format '{{.Names}}' 2>/dev/null)
+        if [[ -z "$containers" ]]; then
+            return
+        fi
+        # Header
+        printf "%-30s %-12s %s\n" "NAME" "STATUS" "DIRECTORY"
+        # Data rows
+        while IFS= read -r name; do
+            [[ -z "$name" ]] && continue
+            local status dir
+            status=$($CONTAINER_RUNTIME inspect "$name" --format '{{.State.Status}}' 2>/dev/null)
+            dir=$($CONTAINER_RUNTIME inspect "$name" --format '{{index .Config.Labels "ccc.directory"}}' 2>/dev/null)
+            printf "%-30s %-12s %s\n" "$name" "$status" "$dir"
+        done <<< "$containers"
+        return
     else
         # Simple format that works for both Podman and Docker
         # Note: Label indexing differs between runtimes and can fail when keys don't exist
@@ -224,6 +259,20 @@ container_running() {
 # Get stopped containers only
 get_stopped_containers() {
     $CONTAINER_RUNTIME ps -a --filter "label=${LABEL_PREFIX}.managed=true" --filter "status=exited" --format '{{.Names}}' 2>/dev/null
+}
+
+# Filter containers by Perl-compatible regex
+# Usage: filter_containers "pattern" [container_list]
+# If container_list not provided, uses all managed containers
+filter_containers() {
+    local pattern="$1"
+    local containers="${2:-$(get_containers "quiet")}"
+
+    if [[ -z "$containers" ]]; then
+        return
+    fi
+
+    echo "$containers" | grep -P "$pattern" 2>/dev/null
 }
 
 # Check other backend for containers and show hint if found
@@ -277,6 +326,9 @@ cmd_new() {
     local prompt_file=""
     local godmode=false
     local cc_args=""
+    local clean_mode=false
+    local anonymous_mode=false
+    local network="host"
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -313,6 +365,18 @@ cmd_new() {
                 godmode=true
                 shift
                 ;;
+            -c|--clean)
+                clean_mode=true
+                shift
+                ;;
+            -a|--anonymous)
+                anonymous_mode=true
+                shift
+                ;;
+            --network)
+                network="$2"
+                shift 2
+                ;;
             --cc-args)
                 cc_args="$2"
                 shift 2
@@ -328,6 +392,8 @@ cmd_new() {
                         i) interactive=true ;;
                         g) godmode=true ;;
                         t) tmux_mount=true ;;
+                        c) clean_mode=true ;;
+                        a) anonymous_mode=true ;;
                         *) die "Unknown flag: -$flag" ;;
                     esac
                 done
@@ -337,6 +403,17 @@ cmd_new() {
                 ;;
         esac
     done
+
+    # Handle clean mode - create temp directory
+    if [[ "$clean_mode" == true ]]; then
+        local tmp_base="/tmp/ccc"
+        mkdir -p "$tmp_base"
+        local random_suffix
+        random_suffix=$(head -c 4 /dev/urandom | xxd -p)
+        directory="${tmp_base}/tmp${random_suffix}"
+        mkdir -p "$directory"
+        info "Clean mode: using temporary directory"
+    fi
 
     # Default directory to pwd
     directory="${directory:-$(pwd)}"
@@ -370,15 +447,33 @@ cmd_new() {
         -e "CLAUDE_HOST_HOME=$HOME"
         -e "TERM=${TERM:-xterm-256color}"
         -v "$directory:$directory"
-        -v "$HOME/.claude:/host-claude:ro"
-        -v "$HOME/.claude.json:$HOME/.claude.json"
-        --network host
+        --network "$network"
         --label "${LABEL_PREFIX}.managed=true"
         --label "${LABEL_PREFIX}.name=$name"
         --label "${LABEL_PREFIX}.directory=$directory"
         --label "${LABEL_PREFIX}.runtime=$RUNTIME_MODE"
         --label "${LABEL_PREFIX}.session-id=$session_id"
     )
+
+    # Mount .claude config unless in anonymous mode
+    if [[ "$anonymous_mode" == true ]]; then
+        run_args+=(--label "${LABEL_PREFIX}.anonymous=true")
+        info "Anonymous mode: no credentials mounted (login required)"
+    else
+        run_args+=(-v "$HOME/.claude:/host-claude:ro")
+        run_args+=(-v "$HOME/.claude.json:$HOME/.claude.json")
+    fi
+
+    # Add clean mode label
+    if [[ "$clean_mode" == true ]]; then
+        run_args+=(--label "${LABEL_PREFIX}.clean=true")
+    fi
+
+    # Add network label if not host
+    if [[ "$network" != "host" ]]; then
+        run_args+=(--label "${LABEL_PREFIX}.network=$network")
+        info "Network: $network"
+    fi
 
     # Runtime-specific configuration
     # fakeroot in entrypoint handles godmode for all runtimes
@@ -446,9 +541,10 @@ cmd_new() {
     if [[ -n "$prompt_text" ]]; then
         # Wait a bit more for Claude TUI to initialize
         sleep 1.5
-        # Send text and Enter separately to ensure Enter is processed
+        # Send text literally (-l)
         $CONTAINER_RUNTIME exec "$name" \
-            /usr/bin/tmux.real -S /tmp/ccc.sock send-keys -t main "$prompt_text"
+            /usr/bin/tmux.real -S /tmp/ccc.sock send-keys -t main -l "$prompt_text"
+        # Send Enter as a key (separate call to avoid escaping issues)
         $CONTAINER_RUNTIME exec "$name" \
             /usr/bin/tmux.real -S /tmp/ccc.sock send-keys -t main Enter
     fi
@@ -494,9 +590,9 @@ cmd_list() {
         echo ""
 
         local containers
-        containers=$(get_containers "table")
+        containers=$(get_containers "detailed")
 
-        if [[ -z "$containers" ]] || [[ "$containers" == "NAMES"* && $(echo "$containers" | wc -l) -eq 1 ]]; then
+        if [[ -z "$containers" ]] || [[ $(echo "$containers" | wc -l) -le 1 ]]; then
             info "No containers found"
             hint_other_backend "list"
         else
@@ -514,13 +610,13 @@ cmd_list() {
 
             # Print data rows with status coloring
             echo "$containers" | tail -n +2 | while IFS= read -r line; do
-                if [[ "$line" == *"Up "* ]]; then
+                if [[ "$line" == *"running"* ]]; then
                     # Running: green
                     echo -e "${GRN}${line}${R}"
-                elif [[ "$line" == *"Created"* ]]; then
+                elif [[ "$line" == *"created"* ]]; then
                     # Created but never started: cyan
                     echo -e "${CYN}${line}${R}"
-                elif [[ "$line" == *"Exited"* ]]; then
+                elif [[ "$line" == *"exited"* ]]; then
                     # Stopped: dim gray
                     echo -e "${DIM}${GRY}${line}${R}"
                 else
@@ -533,12 +629,17 @@ cmd_list() {
 
 cmd_stop() {
     local name=""
+    local filter=""
     local all=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -n|--name)
                 name="$2"
+                shift 2
+                ;;
+            -f|--filter)
+                filter="$2"
                 shift 2
                 ;;
             -a|--all)
@@ -550,6 +651,37 @@ cmd_stop() {
                 ;;
         esac
     done
+
+    # Handle filter flag - get matching containers
+    if [[ -n "$filter" ]]; then
+        local containers
+        containers=$(filter_containers "$filter")
+
+        if [[ -z "$containers" ]]; then
+            die "No containers matching filter: $filter"
+        fi
+
+        local count
+        count=$(echo "$containers" | wc -l)
+
+        echo "Containers matching '$filter':"
+        echo "$containers" | gum style --foreground 3
+        echo ""
+
+        if gum confirm "Stop $count container(s)?"; then
+            echo "$containers" | while read -r container; do
+                if [[ -n "$container" ]]; then
+                    gum spin --spinner dot --title "Stopping $container..." -- \
+                        $CONTAINER_RUNTIME stop "$container" >/dev/null 2>&1
+                    $CONTAINER_RUNTIME rm "$container" >/dev/null 2>&1 || true
+                    success "Stopped: $container"
+                fi
+            done
+        else
+            info "Cancelled"
+        fi
+        return 0
+    fi
 
     if [[ "$all" == true ]]; then
         local containers
@@ -639,12 +771,17 @@ cmd_prune() {
 
 cmd_start() {
     local name=""
+    local filter=""
     local attach=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -n|--name)
                 name="$2"
+                shift 2
+                ;;
+            -f|--filter)
+                filter="$2"
                 shift 2
                 ;;
             -a|--attach)
@@ -657,7 +794,30 @@ cmd_start() {
         esac
     done
 
-    if [[ -z "$name" ]]; then
+    # Handle filter flag
+    if [[ -n "$filter" ]]; then
+        local stopped
+        stopped=$(get_stopped_containers)
+        local containers
+        containers=$(filter_containers "$filter" "$stopped")
+
+        if [[ -z "$containers" ]]; then
+            die "No stopped containers matching filter: $filter"
+        fi
+
+        local count
+        count=$(echo "$containers" | wc -l)
+
+        if [[ "$count" -eq 1 ]]; then
+            name="$containers"
+        else
+            echo "Containers matching '$filter':"
+            name=$(echo "$containers" | gum choose --header "Select container to start:")
+            if [[ -z "$name" ]]; then
+                die "No container selected"
+            fi
+        fi
+    elif [[ -z "$name" ]]; then
         # Interactive selection from stopped containers
         local containers
         containers=$(get_stopped_containers)
@@ -703,11 +863,16 @@ cmd_start() {
 
 cmd_attach() {
     local name=""
+    local filter=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -n|--name)
                 name="$2"
+                shift 2
+                ;;
+            -f|--filter)
+                filter="$2"
                 shift 2
                 ;;
             *)
@@ -716,7 +881,30 @@ cmd_attach() {
         esac
     done
 
-    if [[ -z "$name" ]]; then
+    # Handle filter flag
+    if [[ -n "$filter" ]]; then
+        local all_containers
+        all_containers=$(get_containers "quiet")
+        local containers
+        containers=$(filter_containers "$filter" "$all_containers")
+
+        if [[ -z "$containers" ]]; then
+            die "No containers matching filter: $filter"
+        fi
+
+        local count
+        count=$(echo "$containers" | wc -l)
+
+        if [[ "$count" -eq 1 ]]; then
+            name="$containers"
+        else
+            echo "Containers matching '$filter':"
+            name=$(echo "$containers" | gum choose --header "Select container to attach:")
+            if [[ -z "$name" ]]; then
+                die "No container selected"
+            fi
+        fi
+    elif [[ -z "$name" ]]; then
         # Interactive selection
         local containers
         containers=$(get_running_containers)
@@ -770,12 +958,17 @@ cmd_attach() {
 
 cmd_logs() {
     local name=""
+    local filter=""
     local follow=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -n|--name)
                 name="$2"
+                shift 2
+                ;;
+            --filter)
+                filter="$2"
                 shift 2
                 ;;
             -f|--follow)
@@ -788,7 +981,30 @@ cmd_logs() {
         esac
     done
 
-    if [[ -z "$name" ]]; then
+    # Handle filter flag
+    if [[ -n "$filter" ]]; then
+        local all_containers
+        all_containers=$(get_containers "quiet")
+        local containers
+        containers=$(filter_containers "$filter" "$all_containers")
+
+        if [[ -z "$containers" ]]; then
+            die "No containers matching filter: $filter"
+        fi
+
+        local count
+        count=$(echo "$containers" | wc -l)
+
+        if [[ "$count" -eq 1 ]]; then
+            name="$containers"
+        else
+            echo "Containers matching '$filter':"
+            name=$(echo "$containers" | gum choose --header "Select container:")
+            if [[ -z "$name" ]]; then
+                die "No container selected"
+            fi
+        fi
+    elif [[ -z "$name" ]]; then
         # Interactive selection
         local containers
         containers=$(get_containers "quiet")
@@ -834,6 +1050,7 @@ cmd_logs() {
 
 cmd_exec() {
     local name=""
+    local filter=""
     local shell_mode=false
     local cmd_args=()
 
@@ -841,6 +1058,10 @@ cmd_exec() {
         case "$1" in
             -n|--name)
                 name="$2"
+                shift 2
+                ;;
+            -f|--filter)
+                filter="$2"
                 shift 2
                 ;;
             --shell)
@@ -860,7 +1081,30 @@ cmd_exec() {
         esac
     done
 
-    if [[ -z "$name" ]]; then
+    # Handle filter flag
+    if [[ -n "$filter" ]]; then
+        local running
+        running=$(get_running_containers)
+        local containers
+        containers=$(filter_containers "$filter" "$running")
+
+        if [[ -z "$containers" ]]; then
+            die "No running containers matching filter: $filter"
+        fi
+
+        local count
+        count=$(echo "$containers" | wc -l)
+
+        if [[ "$count" -eq 1 ]]; then
+            name="$containers"
+        else
+            echo "Containers matching '$filter':"
+            name=$(echo "$containers" | gum choose --header "Select container:")
+            if [[ -z "$name" ]]; then
+                die "No container selected"
+            fi
+        fi
+    elif [[ -z "$name" ]]; then
         # Interactive selection
         local containers
         containers=$(get_running_containers)
@@ -895,7 +1139,10 @@ cmd_exec() {
     elif [[ "$mode" == "tmux" ]]; then
         # Send command to claude TUI via tmux send-keys
         local cmd_string="${cmd_args[*]}"
-        $CONTAINER_RUNTIME exec "$name" /usr/bin/tmux.real -S /tmp/ccc.sock send-keys -t main "$cmd_string" Enter
+        # Send text literally (-l)
+        $CONTAINER_RUNTIME exec "$name" /usr/bin/tmux.real -S /tmp/ccc.sock send-keys -t main -l "$cmd_string"
+        # Send Enter as a key (separate call to avoid escaping issues)
+        $CONTAINER_RUNTIME exec "$name" /usr/bin/tmux.real -S /tmp/ccc.sock send-keys -t main Enter
         info "Sent to TUI: $cmd_string"
     else
         # Non-tmux container - can only run shell commands
@@ -965,18 +1212,43 @@ cmd_help() {
         "  **-p** <prompt|->           System prompt (- for stdin)" \
         "  **-f** <file>               System prompt from file" \
         "  **-g, --godmode**           Full permissions (--dangerously-skip-permissions)" \
+        "  **-c, --clean**             Use temp directory (/tmp/ccc/tmpXXXX)" \
+        "  **-a, --anonymous**         No credentials (requires login)" \
+        "  **--network** <name>        Container network (default: host)" \
         "  **--cc-args** <args>        Additional claude arguments"
+
+    echo ""
+    gum style --bold "ccc stop options:"
+    gum format -- \
+        "  **-n, --name** <name>   Container name" \
+        "  **-f, --filter** <pat>  Filter containers by Perl regex" \
+        "  **-a, --all**           Stop all containers"
 
     echo ""
     gum style --bold "ccc start options:"
     gum format -- \
         "  **-n, --name** <name>   Container name" \
+        "  **-f, --filter** <pat>  Filter containers by Perl regex" \
         "  **-a, --attach**        Attach after starting"
+
+    echo ""
+    gum style --bold "ccc attach options:"
+    gum format -- \
+        "  **-n, --name** <name>   Container name" \
+        "  **-f, --filter** <pat>  Filter containers by Perl regex"
+
+    echo ""
+    gum style --bold "ccc logs options:"
+    gum format -- \
+        "  **-n, --name** <name>   Container name" \
+        "  **--filter** <pat>      Filter containers by Perl regex" \
+        "  **-f, --follow**        Follow log output"
 
     echo ""
     gum style --bold "ccc exec options:"
     gum format -- \
         "  **-n, --name** <name>   Container name" \
+        "  **-f, --filter** <pat>  Filter containers by Perl regex" \
         "  **--shell**             Run command in container shell (not TUI)" \
         "  **command**             Command to send to TUI (default)" \
         "  **(no args)**           Opens interactive shell (--shell implied)"
@@ -1010,6 +1282,16 @@ cmd_help() {
     echo ""
     gum style --foreground 8 "  # Run a shell command inside the container"
     echo "  ccc exec -n mycontainer --shell ls -la"
+    echo ""
+    gum style --foreground 8 "  # Filter containers by regex pattern"
+    echo "  ccc attach -f 'myproject.*'"
+    echo "  ccc stop -f '^ccc-test'"
+    echo ""
+    gum style --foreground 8 "  # Start with temporary clean directory"
+    echo "  ccc new -igc"
+    echo ""
+    gum style --foreground 8 "  # Fully isolated anonymous session"
+    echo "  ccc new -igca --network my-isolated-net"
 }
 
 # =============================================================================

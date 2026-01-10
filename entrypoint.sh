@@ -27,7 +27,7 @@ mkdir -p "$HOME/.claude"
 # Directories that Claude needs to write to (don't symlink, create fresh)
 WRITABLE_DIRS="debug cache todos statsig telemetry shell-snapshots session-env file-history projects plans"
 
-# Symlink host's .claude contents (except writable dirs and commands)
+# Symlink host's .claude contents (except writable dirs, commands, and CLAUDE.md)
 # Include hidden files like .credentials.json
 if [ -d /host-claude ]; then
     for item in /host-claude/* /host-claude/.*; do
@@ -37,6 +37,8 @@ if [ -d /host-claude ]; then
         [ "$name" = "." ] || [ "$name" = ".." ] && continue
         # Skip commands directory - we'll handle it specially
         [ "$name" = "commands" ] && continue
+        # Skip CLAUDE.md - we'll create a merged version
+        [ "$name" = "CLAUDE.md" ] && continue
         # Skip writable directories - create fresh ones
         case " $WRITABLE_DIRS " in
             *" $name "*) continue ;;
@@ -65,6 +67,21 @@ if [ -d /host-claude/commands ]; then
         cmdname=$(basename "$cmd")
         [ ! -f "$HOME/.claude/commands/$cmdname" ] && cp "$cmd" "$HOME/.claude/commands/$cmdname"
     done
+fi
+
+# Create merged CLAUDE.md (container instructions + host's global instructions)
+if [ -f /ccc/CLAUDE.md ]; then
+    # Start with container's CLAUDE.md
+    cp /ccc/CLAUDE.md "$HOME/.claude/CLAUDE.md"
+    # Append host's CLAUDE.md if it exists
+    if [ -f /host-claude/CLAUDE.md ]; then
+        echo "" >> "$HOME/.claude/CLAUDE.md"
+        echo "---" >> "$HOME/.claude/CLAUDE.md"
+        echo "" >> "$HOME/.claude/CLAUDE.md"
+        echo "# Host Global Instructions" >> "$HOME/.claude/CLAUDE.md"
+        echo "" >> "$HOME/.claude/CLAUDE.md"
+        cat /host-claude/CLAUDE.md >> "$HOME/.claude/CLAUDE.md"
+    fi
 fi
 
 # Check if we should start tmux server (CCC_USE_TMUX env var)

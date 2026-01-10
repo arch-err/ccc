@@ -1,0 +1,121 @@
+# Packages to pre-install in the container
+# Format:
+#   - name: nix-package-name
+#     tools:
+#       - command1
+#       - command2
+#
+# The 'name' is used for `nix-env -iA nixpkgs.<name>`
+# The 'tools' list documents which commands become available
+# If tools is omitted, the package name is assumed to be the tool name
+
+packages:
+  # Editors
+  - name: vim
+    tools:
+      - vim
+      - vi
+
+  # Network tools
+  - name: dnsutils
+    tools:
+      - dig
+      - nslookup
+      - nsupdate
+
+  - name: curl
+
+  - name: wget
+
+  - name: netcat-openbsd
+    tools:
+      - nc
+
+  # File tools
+  - name: jq
+
+  - name: yq-go
+    tools:
+      - yq
+
+  - name: ripgrep
+    tools:
+      - rg
+
+  - name: fd
+
+  - name: tree
+
+  - name: file
+
+  - name: unzip
+
+  - name: gzip
+
+  - name: gnutar
+    tools:
+      - tar
+
+  # Development tools
+  - name: gnumake
+    tools:
+      - make
+
+  - name: gnused
+    tools:
+      - sed
+
+  - name: gawk
+    tools:
+      - awk
+      - gawk
+
+  - name: findutils
+    tools:
+      - find
+      - xargs
+
+  - name: coreutils
+    tools:
+      - cat
+      - ls
+      - cp
+      - mv
+      - rm
+      - mkdir
+      - chmod
+      - chown
+      - head
+      - tail
+      - sort
+      - uniq
+      - wc
+      - cut
+      - tr
+      - tee
+      - env
+      - printenv
+      - basename
+      - dirname
+      - realpath
+
+  - name: diffutils
+    tools:
+      - diff
+      - cmp
+
+  - name: patch
+
+  - name: less
+
+  - name: which
+
+  - name: htop
+
+  - name: procps
+    tools:
+      - ps
+      - top
+      - free
+      - pkill
+      - pgrep

@@ -7,6 +7,10 @@ RUN echo "experimental-features = nix-command flakes" >> /etc/nix/nix.conf && \
 # Install base tools via nix (git-minimal already in base image)
 RUN nix-env -iA nixpkgs.nodejs nixpkgs.tmux
 
+# Install packages from packages.yaml
+COPY packages.yaml /packages.yaml
+RUN nix-env -iA $(nix-shell -p yq-go --run "yq -r '.packages[].name | \"nixpkgs.\" + .' /packages.yaml" | tr '\n' ' ')
+
 # Create fake UID library for godmode support
 # This makes Claude think we're not root while keeping root's file access
 RUN mkdir -p /usr/local/lib && \
@@ -60,12 +64,14 @@ RUN git config --global user.name "Claude Sandbox" && \
 ENV PATH="/usr/local/bin:/root/.nix-profile/bin:/nix/var/nix/profiles/default/bin:$PATH"
 ENV BASH_ENV="/etc/bashrc"
 ENV GIT_TERMINAL_PROMPT=0
+ENV EDITOR=vim
 
 # Install tmux config for internal ccc use
 COPY tmux.conf /etc/ccc-tmux.conf
 
-# Install container-specific Claude commands
+# Install container-specific Claude commands and documentation
 COPY commands/ /ccc/commands/
+COPY container-CLAUDE.md /ccc/CLAUDE.md
 
 # Create tmux wrapper to prevent accidental tmux usage
 # Move real tmux binary and install wrapper
