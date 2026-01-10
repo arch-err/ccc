@@ -1,7 +1,6 @@
 # ccc - Claude Code Container
-<p align="center">
-  <img src="assets/claude_container_no_background.jpg" alt="ccc logo" width="400">
-</p>
+
+![ccc logo](assets/claude_container_no_background.jpg)
 
 
 <p align="center">
