@@ -34,8 +34,8 @@ ccc stop -n <container-name>
 |------------|----------|-------------|
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Yes | The CLI tool this wraps |
 | [Docker](https://docs.docker.com/get-docker/) | One of | Container runtime |
-| [Podman](https://podman.io/getting-started/installation) | One of | Container runtime (recommended) |
-| [gum](https://github.com/charmbracelet/gum) | Optional | Pretty terminal UI |
+| [Podman](https://podman.io/getting-started/installation) | One of | Container runtime |
+| [gum](https://github.com/charmbracelet/gum) | Yes | Terminal UI components |
 
 ## Installation
 

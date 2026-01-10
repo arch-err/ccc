@@ -124,6 +124,17 @@ install:
 	fi; \
 	success "Claude Code found"; \
 	\
+	# Check for gum (required) \
+	if [[ "$$HAS_GUM" == "false" ]]; then \
+		error "gum is required but not installed"; \
+		echo ""; \
+		echo "Install gum first:"; \
+		echo "  https://github.com/charmbracelet/gum#installation"; \
+		echo ""; \
+		exit 1; \
+	fi; \
+	success "gum found"; \
+	\
 	# Check for container runtimes \
 	HAS_DOCKER=false; \
 	HAS_PODMAN=false; \
@@ -167,14 +178,6 @@ install:
 		SELECTED_BACKEND="docker"; \
 	fi; \
 	success "Using $$SELECTED_BACKEND as container runtime"; \
-	\
-	# Check for gum (optional) \
-	if [[ "$$HAS_GUM" == "false" ]]; then \
-		warn "gum not found (optional, but recommended for better UI)"; \
-		echo "  Install: https://github.com/charmbracelet/gum"; \
-	else \
-		success "gum found"; \
-	fi; \
 	\
 	echo ""; \
 	info "Installing ccc..."; \
