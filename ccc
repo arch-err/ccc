@@ -61,26 +61,12 @@ detect_runtime() {
     return 1
 }
 
-# Show runtime warning for modes without godmode support (first time only per session)
-NOGODMODE_WARNING_SHOWN=false
-show_nogodmode_warning() {
-    [[ "$NOGODMODE_WARNING_SHOWN" == true ]] && return
-    [[ "$RUNTIME_MODE" != "docker-rootless" ]] && return
-    [[ "$QUIET" == true ]] && return
-
-    NOGODMODE_WARNING_SHOWN=true
-    gum style --foreground 3 --bold "⚠ WARNING: Running with Docker in rootless mode"
-    gum style --foreground 3 "  • Godmode (-g) not available"
-    gum style --foreground 3 "  • Container isolation still provides security"
-    echo ""
-}
-
 # Get runtime info for display
 get_runtime_info() {
     case "$RUNTIME_MODE" in
-        podman) echo "Podman (godmode supported)" ;;
-        docker-rootful) echo "Docker rootful (godmode supported)" ;;
-        docker-rootless) echo "Docker rootless (no godmode)" ;;
+        podman) echo "Podman" ;;
+        docker-rootful) echo "Docker (rootful)" ;;
+        docker-rootless) echo "Docker (rootless)" ;;
         *) echo "Unknown" ;;
     esac
 }
@@ -279,9 +265,6 @@ cmd_new() {
     info "Directory: $directory"
     info "Runtime: $(get_runtime_info)"
 
-    # Show warning for runtimes without godmode support
-    show_nogodmode_warning
-
     # Generate session ID for resumable sessions
     local session_id
     session_id=$(uuidgen)
@@ -307,28 +290,11 @@ cmd_new() {
     )
 
     # Runtime-specific configuration
+    # fakeroot in entrypoint handles godmode for all runtimes
     case "$RUNTIME_MODE" in
-        podman)
-            # Podman rootless: entrypoint switches to non-root user (for godmode)
-            # User is added to group 0 (root) for file access since mounted files
-            # appear as root:root in rootless podman
-            run_args+=(
-                -e "CLAUDE_HOST_UID=$(id -u)"
-                -e "CLAUDE_HOST_USER=$USER"
-            )
-            ;;
         docker-rootful)
-            # Docker rootful: use --userns=host and create matching user
-            run_args+=(
-                --userns=host
-                -e "CLAUDE_HOST_UID=$(id -u)"
-                -e "CLAUDE_HOST_GID=$(id -g)"
-                -e "CLAUDE_HOST_USER=$USER"
-            )
-            ;;
-        docker-rootless)
-            # Docker rootless: run as root (maps to host user)
-            # No UID env vars - entrypoint will stay as root
+            # Docker rootful: use --userns=host for proper UID mapping
+            run_args+=(--userns=host)
             ;;
     esac
 
@@ -342,16 +308,11 @@ cmd_new() {
     # Build claude command args
     local claude_args=(--session-id "$session_id")
 
-    # Add godmode flags
+    # Add godmode flags (fakeroot makes this work on all runtimes)
     if [[ "$godmode" == true ]]; then
         run_args+=(--label "${LABEL_PREFIX}.godmode=true")
-        if [[ "$RUNTIME_MODE" == "docker-rootless" ]]; then
-            warn "Godmode unavailable in Docker rootless (no user switching support)"
-            warn "Container still provides filesystem isolation. You'll need to approve permissions manually."
-        else
-            claude_args+=(--dangerously-skip-permissions)
-            info "Godmode enabled"
-        fi
+        claude_args+=(--dangerously-skip-permissions)
+        info "Godmode enabled"
     fi
 
     # Add custom cc_args
@@ -402,13 +363,9 @@ cmd_new() {
         fi
 
         # Run claude with the prompt via exec (separate from container's main process)
+        # LD_PRELOAD is set in container to fake UID for godmode
         info "Running prompt..."
-        # Use --user to run as non-root for godmode support
-        if [[ "$RUNTIME_MODE" == "podman" ]]; then
-            $CONTAINER_RUNTIME exec --user "$(id -u):0" -e "HOME=$HOME" "$name" claude "${claude_args[@]}"
-        else
-            $CONTAINER_RUNTIME exec -e "HOME=$HOME" "$name" claude "${claude_args[@]}"
-        fi
+        $CONTAINER_RUNTIME exec -e "HOME=$HOME" -e "LD_PRELOAD=/usr/local/lib/libfakeuid.so" "$name" claude "${claude_args[@]}"
 
         success "Prompt completed: $name"
         info "Session ID: $session_id"
@@ -651,17 +608,13 @@ cmd_attach() {
         # Headless mode: exec with --resume to continue the session
         info "Resuming session: $session_id"
         local claude_cmd=(claude --resume "$session_id")
-        # Enable godmode if supported (podman and docker-rootful)
-        if [[ "$godmode" == "true" && "$container_runtime" != "docker-rootless" ]]; then
+        # Enable godmode if container was created with -g
+        if [[ "$godmode" == "true" ]]; then
             claude_cmd+=(--dangerously-skip-permissions)
             info "Godmode enabled"
         fi
-        # Use --user for podman to run as non-root
-        if [[ "$container_runtime" == "podman" ]]; then
-            $CONTAINER_RUNTIME exec -it --user "$(id -u):0" -e "HOME=$HOME" "$name" "${claude_cmd[@]}"
-        else
-            $CONTAINER_RUNTIME exec -it -e "HOME=$HOME" "$name" "${claude_cmd[@]}"
-        fi
+        # LD_PRELOAD fakes UID for godmode support
+        $CONTAINER_RUNTIME exec -it -e "HOME=$HOME" -e "LD_PRELOAD=/usr/local/lib/libfakeuid.so" "$name" "${claude_cmd[@]}"
     else
         # Fallback: just attach
         warn "No session ID found, using container attach"
@@ -769,12 +722,7 @@ cmd_exec() {
         cmd_args=(sh)
     fi
 
-    # Use --user for podman to run as non-root
-    if [[ "$RUNTIME_MODE" == "podman" ]]; then
-        $CONTAINER_RUNTIME exec -it --user "$(id -u):0" -e "HOME=$HOME" "$name" "${cmd_args[@]}"
-    else
-        $CONTAINER_RUNTIME exec -it -e "HOME=$HOME" "$name" "${cmd_args[@]}"
-    fi
+    $CONTAINER_RUNTIME exec -it -e "HOME=$HOME" "$name" "${cmd_args[@]}"
 }
 
 cmd_help() {

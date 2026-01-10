@@ -1,33 +1,31 @@
 # ccc - Claude Code Container
 
-A CLI tool for running Claude Code in isolated containers with full godmode support.
+CLI for running Claude Code in isolated containers, so you can use --dangerously-skip-permissions without feeling guilty
 
 ## Why?
 
-Claude Code's `--dangerously-skip-permissions` flag (godmode) lets Claude execute commands without manual approval - great for automation, but risky on your main system. Running Claude in a container provides:
+Claude Code's `--dangerously-skip-permissions` flag (what I've chosen to call *godmode* in the context of this tool) lets Claude execute commands without manual approval - great for automation, but risky on your main system. Since I love containers and they are so simple to work with, I chose this over just running claude instances on a VM.
 
-- **Isolation**: Claude can only affect files you explicitly mount
-- **Safety**: Mistakes are contained to the container
-- **Godmode**: Full automation without risking your system
-- **Persistence**: Sessions survive container restarts
+By creating a container based on nix, which can use the `nix-shell` to run tools that are not pre-downloaded, we can (along with some claude prompting or claude config/memory) let claude use a bunch of different tools, without having to know of them beforehand.
+
 
 ## Quick Start
 
 ```bash
 # Run a one-off prompt with godmode
-./ccc new -g -p "create a hello world python script"
+ccc new -g -p "create a hello world python script"
 
 # Start an interactive session
-./ccc new -g -i
+ccc new -ig
 
 # List running containers
-./ccc list
+ccc list
 
 # Attach to an existing session
-./ccc attach -n <container-name>
+ccc attach -n <container-name>
 
 # Stop a container
-./ccc stop -n <container-name>
+ccc stop -n <container-name>
 ```
 
 ## Requirements
@@ -50,18 +48,7 @@ podman build -t claude-code-sandbox:latest .
 ln -s $(pwd)/ccc ~/.local/bin/ccc
 ```
 
-### First-Time Setup for Podman
-
-For godmode to work with Podman, you need to set ACLs on your Claude config files:
-
-```bash
-# Grant group access via ACLs (required for container file access)
-setfacl -R -m g::rwX ~/.claude
-setfacl -R -d -m g::rwX ~/.claude
-setfacl -m g::rw ~/.claude.json
-```
-
-See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for why this is necessary.
+No additional setup required! The container uses LD_PRELOAD to fake UIDs, giving godmode support without any host-side permission changes.
 
 ## Usage
 
@@ -69,58 +56,58 @@ See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for why this is necessary.
 
 ```bash
 # Basic usage - headless mode with a prompt
-./ccc new -p "your prompt here"
+ccc new -p "your prompt here"
 
 # With godmode (auto-approve all actions)
-./ccc new -g -p "your prompt here"
+ccc new -g -p "your prompt here"
 
 # Interactive mode (opens claude TUI)
-./ccc new -g -i
+ccc new -g -i
 
 # Specify working directory
-./ccc new -g -d /path/to/project -p "analyze this codebase"
+ccc new -g -d /path/to/project -p "analyze this codebase"
 
 # Custom container name
-./ccc new -g -n my-project -p "your prompt"
+ccc new -g -n my-project -p "your prompt"
 ```
 
 ### Manage Containers
 
 ```bash
 # List all ccc containers
-./ccc list
+ccc list
 
 # Attach to a running container
-./ccc attach -n <name>
+ccc attach -n <name>
 
 # Stop a container
-./ccc stop -n <name>
+ccc stop -n <name>
 
 # Start a stopped container
-./ccc start -n <name>
+ccc start -n <name>
 
 # View container logs
-./ccc logs -n <name>
-./ccc logs -n <name> -f  # follow mode
+ccc logs -n <name>
+ccc logs -n <name> -f  # follow mode
 
 # Execute commands in a container
-./ccc exec -n <name> -- ls -la
-./ccc exec -n <name>  # opens a shell
+ccc exec -n <name> -- ls -la
+ccc exec -n <name>  # opens a shell
 ```
 
 ## Supported Runtimes
 
 | Runtime | Godmode | Notes |
 |---------|---------|-------|
-| Podman (rootless) | Yes | Recommended. Requires ACL setup. |
-| Docker (rootful) | Yes | Full support via user switching. |
-| Docker (rootless) | No | Container runs as uid 0, godmode refused. |
+| Podman (rootless) | Yes | Recommended |
+| Docker (rootful) | Yes | Works via userns mapping |
+| Docker (rootless) | Yes | Works via LD_PRELOAD |
 
 ## How It Works
 
 1. **Container Creation**: Mounts your project directory and `~/.claude` credentials
-2. **User Switching**: Runs as non-root user inside container (required for godmode)
-3. **File Access**: Uses ACLs to grant the container user access to mounted files
+2. **LD_PRELOAD Magic**: A tiny library fakes uid/gid syscalls, making Claude think it's non-root
+3. **Root File Access**: Actually runs as root inside container, so all mounted files are accessible
 4. **Session Persistence**: Sessions are stored and can be resumed with `ccc attach`
 
 See [DOCUMENTATION.md](DOCUMENTATION.md) for technical details.
@@ -130,7 +117,3 @@ See [DOCUMENTATION.md](DOCUMENTATION.md) for technical details.
 - `ccc` - Main CLI script
 - `Dockerfile` - Container image definition (based on nixos/nix)
 - `entrypoint.sh` - Container entrypoint handling user setup
-
-## License
-
-MIT
