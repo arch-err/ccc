@@ -1,4 +1,4 @@
-# ccc - Claude Code Container
+# ccc - Claude Code Containers
 
 ![ccc logo](assets/claude_container_no_background.png)
 

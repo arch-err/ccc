@@ -1,5 +1,5 @@
-site_name: ccc
-site_description: Claude Code Container - Run Claude Code in isolated containers
+site_name: Claude Code Containers
+site_description: Claude Code Containers - Run Claude Code in isolated containers
 site_url: https://arch-err.github.io/ccc
 repo_url: https://github.com/arch-err/ccc
 repo_name: arch-err/ccc
